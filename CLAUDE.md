@@ -10,7 +10,7 @@ botfarm/
 │   ├── app.py              # All backend logic: bot lifecycle, backup, metrics, API routes
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── tests/test_fleet.py # 59 unit tests (pytest)
+│   └── tests/test_fleet.py # 61 unit tests (pytest)
 ├── frontend/               # Next.js 16 dashboard UI (React 19, Tailwind 4, shadcn/ui)
 │   ├── src/app/            # Pages: / (dashboard), /bots/[name] (detail)
 │   ├── src/components/     # UI components (bot-card, bot-actions, logs-dialog, etc.)
@@ -81,11 +81,13 @@ Each bot gets:
   - `workspace/SOUL.md` — personality
   - `workspace/MEMORY.md` — agent memory (pre-created empty)
   - `workspace/memory/` — date-based memory files
-- Container command: `node openclaw.mjs gateway --allow-unconfigured --bind lan`
+- Container command: `node openclaw.mjs gateway --allow-unconfigured --bind lan --auth trusted-proxy` (Docker Compose mode)
 - Restart policy: `unless-stopped`
 
-### Gateway Auth & Device Pairing
-OpenClaw generates a gateway auth token on first start (stored in `openclaw.json → gateway.auth.token`). The Control UI needs this token to connect. Remote browsers also require device pairing approval. The dashboard surfaces the token on the bot detail page and provides an "Approve Devices" button. Clicking "Open UI" auto-fires device approval.
+### Gateway Auth (Trusted Proxy)
+In Docker Compose mode, OpenClaw runs in `trusted-proxy` auth mode. Caddy handles TLS termination and injects an `X-Forwarded-User` header. OpenClaw reads this header for user identity (configured via `gateway.auth.trustedProxy.userHeader` in `openclaw.json`). This bypasses device pairing entirely — Caddy is the single gatekeeper.
+
+In dev mode (no Caddy), OpenClaw uses default token auth. The gateway token is surfaced on the bot detail page and passed via URL hash (`#token=...`) when opening the Control UI.
 
 ### Backup/Rollback
 Backups capture the full agent state: `config.json`, `SOUL.md`, and the entire `.openclaw/` directory (workspace, sessions, cron — excluding logs and temp files). Rollback restores everything but preserves the current gateway auth token so active UI connections aren't broken. A pre-rollback auto-backup is always created first.
@@ -128,12 +130,14 @@ The dashboard container runs as UID 1000 (matching OpenClaw's `node` user and th
 
 Single entry point for all services via Caddy on port 8443 (HTTPS). This is required because OpenClaw Control UI uses `crypto.subtle` which only works in a Secure Context (HTTPS or localhost).
 
-**Route structure:**
-- `/` and `/*` → Next.js frontend (`frontend:3000`)
-- `/api/*` → FastAPI dashboard (`dashboard:8080`)
-- `/bot/{name}/*` → Bot Control UI via `host.docker.internal:{port}`
+**Architecture:** Per-port TLS termination. Each bot gets its own HTTPS port through Caddy because OpenClaw's Control UI connects WebSocket to the root `/` of the origin (path-based routing is impossible).
 
-**Dynamic route sync:** `_sync_caddy_config()` in `app.py` pushes the full route config to Caddy's admin API (`POST http://caddy:2019/load`) on every bot lifecycle event (create, delete, start, stop) and on dashboard startup. Uses full-state reconciliation — always rebuilds the entire config from current Docker container state.
+**Route structure:**
+- `:8443/` and `:8443/*` → Next.js frontend (`frontend:3000`)
+- `:8443/api/*` → FastAPI dashboard (`dashboard:8080`)
+- `:{bot_port}/` → Per-bot TLS-terminated reverse proxy to `openclaw-bot-{name}:18789`
+
+**Dynamic route sync:** `_sync_caddy_config()` in `app.py` pushes the full JSON config to Caddy's admin API (`POST http://caddy:2019/load`) on every bot lifecycle event (create, delete, start, stop) and on dashboard startup. Uses full-state reconciliation — rebuilds the entire config from current Docker container state. Caddy is connected to each bot's bridge network to reach containers directly.
 
 **TLS:** Self-signed cert at `certs/cert.pem` + `certs/key.pem`. Generate with:
 ```bash
@@ -142,8 +146,6 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -subj "/CN=ClawFleetManager" \
   -addext "subjectAltName=IP:<server-ip>,IP:127.0.0.1,DNS:localhost"
 ```
-
-**Bot containers** are on isolated bridge networks so Caddy can't reach them by container name. Caddy targets `host.docker.internal:{port}` instead (the host-exposed ports). The `extra_hosts` directive in docker-compose.yml maps this to the host gateway.
 
 ### Duplicate vs Fork
 - **Duplicate**: Copies config, soul, and workspace. No lineage tracked.
@@ -178,6 +180,8 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 | `CADDY_PORT` | No | Caddy HTTPS port (default: 8443) |
 | `CADDY_ADMIN_URL` | Docker Compose | Caddy admin API URL (default: `http://caddy:2019`) |
 | `PORTAL_URL` | Recommended | External base URL (e.g., `https://10.88.142.100` or `https://fleet.example.com`) — used for HTTP redirects and bot UI links |
+| `BRAVE_API_KEY` | No | Brave Search API key for agent web search |
+| `DOCKER_GID` | Docker Compose | GID of the `docker` group on the host (default: 988). Detect with `stat -c '%g' /var/run/docker.sock` |
 | `OPENCLAW_IMAGE` | No | Bot container image (default: `ghcr.io/openclaw/openclaw:latest`) |
 
 ## Common Tasks
