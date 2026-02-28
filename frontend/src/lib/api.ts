@@ -51,4 +51,8 @@ export const api = {
     request<BotDetail>(`/bots/${encodeURIComponent(name)}/detail`),
   getStats: (name: string) =>
     request<BotStats>(`/bots/${encodeURIComponent(name)}/stats`),
+  approveDevices: (name: string) =>
+    request<{ approved: number; request_ids: string[] }>(`/bots/${encodeURIComponent(name)}/approve-devices`, {
+      method: "POST",
+    }),
 };

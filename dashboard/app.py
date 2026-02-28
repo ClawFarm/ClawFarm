@@ -321,10 +321,16 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
     oc_dir.mkdir(exist_ok=True)
     (oc_dir / "workspace").mkdir(exist_ok=True)
 
-    # Only write SOUL.md if not already present (duplicate/fork may have copied it)
-    ws_soul = oc_dir / "workspace" / "SOUL.md"
+    # Only write workspace files if not already present (duplicate/fork may have copied them)
+    ws = oc_dir / "workspace"
+    ws_soul = ws / "SOUL.md"
     if not ws_soul.exists():
         ws_soul.write_text(soul_text)
+    ws_memory = ws / "MEMORY.md"
+    if not ws_memory.exists():
+        ws_memory.write_text("")
+    ws_memory_dir = ws / "memory"
+    ws_memory_dir.mkdir(exist_ok=True)
 
     # Gateway config: register local model provider, set as default
     llm_model = os.environ.get("LLM_MODEL", "Qwen3.5-122B-A10B")

@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { BotActions } from "./bot-actions";
 import { statusColor } from "@/lib/format";
+import { api } from "@/lib/api";
 import type { Bot } from "@/lib/types";
 
 export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
@@ -28,6 +29,7 @@ export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
             target="_blank"
             rel="noopener noreferrer"
             className="text-primary hover:underline"
+            onClick={() => { api.approveDevices(bot.name).catch(() => {}); }}
           >
             Open UI
           </a>
