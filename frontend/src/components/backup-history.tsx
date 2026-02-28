@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { formatBytes } from "@/lib/format";
 import type { Backup } from "@/lib/types";
 
 interface Props {
@@ -59,6 +60,9 @@ export function BackupHistory({ botName, backups, onAction }: Props) {
               <div>
                 <span className="font-medium">{b.timestamp}</span>
                 <span className="ml-2 text-muted-foreground">{b.label}</span>
+                {b.size_bytes != null && (
+                  <span className="ml-2 text-muted-foreground">{formatBytes(b.size_bytes)}</span>
+                )}
               </div>
               <Button
                 size="sm"

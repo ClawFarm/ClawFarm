@@ -10,7 +10,7 @@ botfarm/
 │   ├── app.py              # All backend logic: bot lifecycle, backup, metrics, API routes
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── tests/test_fleet.py # 61 unit tests (pytest)
+│   └── tests/test_fleet.py # ~100 unit + integration tests (pytest)
 ├── frontend/               # Next.js 16 dashboard UI (React 19, Tailwind 4, shadcn/ui)
 │   ├── src/app/            # Pages: / (dashboard), /bots/[name] (detail)
 │   ├── src/components/     # UI components (bot-card, bot-actions, logs-dialog, etc.)
@@ -50,13 +50,19 @@ cd frontend && npm install && npm run dev
 
 ## Docker Compose Deployment
 
-All three services (dashboard, frontend, Caddy) run in Docker. Access via HTTPS through Caddy.
+**Production deployment is via Docker Compose.** All three services (dashboard, frontend, Caddy) run as containers. Caddy handles TLS termination and is the only publicly exposed service.
 
 ```bash
 docker compose up --build -d
 # Access at https://<server-ip>:8443
 # HTTP :80 redirects to HTTPS :8443
 ```
+
+Bot containers are also Docker containers created by the dashboard via the Docker socket — so the full stack is Docker-in-Docker (dashboard container → Docker socket → bot containers on the host).
+
+### Screenshots
+
+UI screenshots go in the `screenshots/` directory (gitignored). Use this for documenting UI changes or sharing progress.
 
 ## Running Tests
 
@@ -84,13 +90,36 @@ Each bot gets:
 - Container command: `node openclaw.mjs gateway --allow-unconfigured --bind lan --auth trusted-proxy` (Docker Compose mode)
 - Restart policy: `unless-stopped`
 
+### Bot Durability and Image Updates
+
+**Failure recovery:** Bot containers use `restart: unless-stopped`, so they automatically restart after crashes, OOM kills, or host reboots. The Docker daemon handles this — no supervisor needed. The only way a bot stays down is if it's explicitly stopped via the dashboard or `docker stop`.
+
+**Data durability:** All bot state lives on the host filesystem under `bots/{name}/` (mounted into the container). Container destruction doesn't lose data — only deleting the bot directory does. Scheduled backups (hourly by default) provide an additional safety net, especially when stored in an external `BACKUP_DIR`.
+
+**Image updates:** Bot containers are created with the image specified by `OPENCLAW_IMAGE` (default: `ghcr.io/openclaw/openclaw:latest`). To update:
+1. Pull the new image: `docker pull ghcr.io/openclaw/openclaw:latest`
+2. Stop and delete existing bot containers via the dashboard (or `docker rm -f`)
+3. Recreate bots from the dashboard — they'll use the new image with existing data
+
+There is no automatic rolling update. Each bot must be recreated individually. Since bot state is on the host filesystem, recreation is non-destructive — the new container picks up the existing `.openclaw/` directory.
+
+**Per-agent management:** Each bot is an independent Docker container with its own network, port, config, and state directory. Bots can be started, stopped, deleted, duplicated, and forked independently. There is no shared state between bots.
+
 ### Gateway Auth (Trusted Proxy)
 In Docker Compose mode, OpenClaw runs in `trusted-proxy` auth mode. Caddy handles TLS termination and injects an `X-Forwarded-User` header. OpenClaw reads this header for user identity (configured via `gateway.auth.trustedProxy.userHeader` in `openclaw.json`). This bypasses device pairing entirely — Caddy is the single gatekeeper.
 
 In dev mode (no Caddy), OpenClaw uses default token auth. The gateway token is surfaced on the bot detail page and passed via URL hash (`#token=...`) when opening the Control UI.
 
 ### Backup/Rollback
-Backups capture the full agent state: `config.json`, `SOUL.md`, and the entire `.openclaw/` directory (workspace, sessions, cron — excluding logs and temp files). Rollback restores everything but preserves the current gateway auth token so active UI connections aren't broken. A pre-rollback auto-backup is always created first.
+Backups are compressed `tar.gz` archives containing the full agent state: `config.json`, `SOUL.md`, and the entire `.openclaw/` directory (workspace, sessions, cron — excluding logs, `.bak` files, and temp files). Each backup records `size_bytes` in metadata.
+
+**Storage:** By default, backups are stored in `bots/{name}/.backups/{timestamp}.tar.gz`. When `BACKUP_DIR` is set, backups go to `{BACKUP_DIR}/{bot_name}/{timestamp}.tar.gz` instead — allowing backups to survive bot deletion and be stored on a separate volume.
+
+**Scheduled backups:** A background thread runs hourly (configurable via `BACKUP_INTERVAL_SECONDS`, 0 to disable) creating backups labeled `"scheduled"` for all bot containers.
+
+**Retention:** After each scheduled backup, old scheduled backups beyond `BACKUP_KEEP` (default 24) are pruned. Manual backups are never auto-pruned.
+
+**Rollback** restores everything but preserves the current gateway auth token so active UI connections aren't broken. A pre-rollback auto-backup is always created first. Rollback supports both new tar.gz backups and old directory-based backups (backward compatible).
 
 ### Docker-in-Docker Volume Mount Paths (HOST_BOTS_DIR Workaround)
 
@@ -152,15 +181,42 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 - **Fork**: Same as duplicate but records `forked_from` in metadata.
 - Both copy the source bot's workspace (memories, identity files) but NOT sessions or gateway auth — each bot gets fresh conversation history and its own auth token.
 
+### Authentication & RBAC
+
+**Architecture:** Caddy `forward_auth` → FastAPI session-based auth.
+
+```
+Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
+                                              ↓ 200 + X-User header
+       ← Caddy copies X-User → X-Forwarded-User → Bot container / Frontend
+```
+
+**User store:** `bots/.users.json` — persists via existing volume mount. Users have `username`, `password_hash` (bcrypt), `role` (admin/user), and `bots` (list of bot names or `["*"]` for all).
+
+**Sessions:** In-memory dict keyed by `secrets.token_urlsafe(32)`. Lost on restart (users must re-login). `_get_session()` re-reads `users.json` every call for always-current RBAC.
+
+**RBAC:** Admin role → all bots. `bots: ["*"]` → all bots. Otherwise check specific bot name list. Per-bot port access uses `_PORT_TO_BOT` cache (rebuilt by `_sync_caddy_config`, zero Docker API calls per auth check).
+
+**Caddy integration:** When `AUTH_DISABLED` is false, Caddy routes are split into public (login, verify, assets) and protected (everything else). Protected routes use forward_auth with subrequest to `/api/auth/verify`. Bot port routes include `X-Original-Port` header for per-bot RBAC.
+
+**Cookie:** `cfm_session`, HttpOnly + Secure + SameSite=Lax, 24h TTL.
+
+**First run:** If no users exist, `_bootstrap_admin()` creates an admin user from `ADMIN_USER`/`ADMIN_PASSWORD` env vars. If `ADMIN_PASSWORD` is unset, a random password is generated and printed to stdout.
+
+**Auth disabled mode:** Set `AUTH_DISABLED=1` to skip all auth. Caddy uses hardcoded `X-Forwarded-User: dev`.
+
 ## Important Files
 
 | File | Purpose |
 |------|---------|
-| `dashboard/app.py` | **All backend logic** — bot CRUD, backup, rollback, metrics, Docker orchestration, API routes |
+| `dashboard/app.py` | **All backend logic** — bot CRUD, backup, rollback, metrics, auth, Docker orchestration, API routes |
 | `frontend/src/lib/api.ts` | Frontend API client — all backend calls |
-| `frontend/src/lib/types.ts` | TypeScript interfaces (Bot, BotDetail, BotStats, Backup, etc.) |
+| `frontend/src/lib/types.ts` | TypeScript interfaces (Bot, BotDetail, BotStats, Backup, User, etc.) |
 | `frontend/src/app/page.tsx` | Dashboard home page |
 | `frontend/src/app/bots/[name]/page.tsx` | Bot detail page |
+| `frontend/src/app/login/page.tsx` | Login page |
+| `frontend/src/app/users/page.tsx` | Admin user management page |
+| `frontend/src/hooks/use-auth.ts` | SWR hook for auth state |
 | `frontend/next.config.ts` | API proxy rewrite rules |
 | `bot-template/config.template.json` | Base config for new bots |
 
@@ -183,6 +239,13 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 | `BRAVE_API_KEY` | No | Brave Search API key for agent web search |
 | `DOCKER_GID` | Docker Compose | GID of the `docker` group on the host (default: 988). Detect with `stat -c '%g' /var/run/docker.sock` |
 | `OPENCLAW_IMAGE` | No | Bot container image (default: `ghcr.io/openclaw/openclaw:latest`) |
+| `BACKUP_DIR` | No | External backup directory. Empty = store in bot's `.backups/` dir |
+| `BACKUP_INTERVAL_SECONDS` | No | How often to run scheduled backups (default: 3600, 0 = disabled) |
+| `BACKUP_KEEP` | No | Max scheduled backups to retain per bot (default: 24) |
+| `ADMIN_USER` | No | Default admin username (default: `admin`) |
+| `ADMIN_PASSWORD` | No | Admin password (empty = auto-generated, printed to stdout) |
+| `SESSION_TTL` | No | Session lifetime in seconds (default: 86400 = 24h) |
+| `AUTH_DISABLED` | No | Set to `1` or `true` to disable auth entirely |
 
 ## Common Tasks
 

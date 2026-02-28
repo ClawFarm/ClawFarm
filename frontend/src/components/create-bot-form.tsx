@@ -32,19 +32,27 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <div className="border-b border-border px-4 py-3">
-      <button
-        onClick={() => setOpen(!open)}
-        className="text-sm font-medium text-muted-foreground hover:text-foreground mb-2"
-      >
-        {open ? "− Hide form" : "+ New Bot"}
-      </button>
-      {open && (
-        <form onSubmit={handleSubmit} className="space-y-3 max-w-xl">
+    <div className="px-6 pt-5">
+      {!open ? (
+        <button
+          onClick={() => setOpen(true)}
+          className="rounded-lg border border-dashed border-border hover:border-muted-foreground/50 bg-card/50 px-4 py-3 w-full text-left text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          + Create new agent
+        </button>
+      ) : (
+        <form
+          onSubmit={handleSubmit}
+          className="rounded-lg border border-border bg-card p-4 space-y-3 max-w-xl"
+        >
+          <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">
+            New Agent
+          </div>
           <Input
-            placeholder="Bot name (e.g. research-bot)"
+            placeholder="Agent name (e.g. research-bot)"
             value={name}
             onChange={(e) => setName(e.target.value)}
+            autoFocus
           />
           <Textarea
             placeholder="SOUL.md — custom personality (optional)"
@@ -53,9 +61,22 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
             rows={3}
           />
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" disabled={loading}>
-            {loading ? "Creating..." : "Create Bot"}
-          </Button>
+          <div className="flex gap-2">
+            <Button type="submit" disabled={loading} size="sm">
+              {loading ? "Creating..." : "Create"}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setOpen(false);
+                setError("");
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
         </form>
       )}
     </div>

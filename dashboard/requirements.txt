@@ -3,4 +3,6 @@ uvicorn[standard]
 docker
 pydantic
 python-dotenv
+bcrypt
 pytest
+httpx

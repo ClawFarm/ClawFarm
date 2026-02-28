@@ -12,6 +12,7 @@ export interface Bot {
   port: number;
   container_name: string;
   forked_from: string | null;
+  created_by: string | null;
   created_at: string | null;
   backup_count: number;
   storage_bytes: number;
@@ -23,12 +24,14 @@ export interface Backup {
   timestamp: string;
   created_at: string;
   label: string;
+  size_bytes?: number;
 }
 
 export interface BotMeta {
   created_at: string;
   modified_at: string;
   forked_from: string | null;
+  created_by: string | null;
   backups: Backup[];
 }
 
@@ -74,4 +77,10 @@ export interface CreateBotRequest {
   name: string;
   soul?: string;
   extra_config?: Record<string, unknown>;
+}
+
+export interface User {
+  username: string;
+  role: string;
+  bots: string[];
 }

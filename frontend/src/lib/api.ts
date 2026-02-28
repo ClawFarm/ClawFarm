@@ -1,12 +1,17 @@
-import type { Bot, BotDetail, BotStats, Backup, CreateBotRequest, FleetStats } from "./types";
+import type { Bot, BotDetail, BotStats, Backup, CreateBotRequest, FleetStats, User } from "./types";
 
 const API_BASE = "/api";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     ...options,
   });
+  if (res.status === 401 && !path.startsWith("/auth/")) {
+    window.location.href = "/login";
+    throw new Error("Not authenticated");
+  }
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(error.detail || "Request failed");
@@ -20,6 +25,34 @@ export interface PortalConfig {
 }
 
 export const api = {
+  // Auth
+  login: (username: string, password: string) =>
+    request<{ ok: boolean; username: string; role: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () =>
+    request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  getMe: () =>
+    request<User>("/auth/me"),
+  listUsers: () =>
+    request<User[]>("/auth/users"),
+  createUser: (data: { username: string; password: string; role: string; bots: string[] }) =>
+    request<User>("/auth/users", { method: "POST", body: JSON.stringify(data) }),
+  updateUser: (username: string, data: { password?: string; role?: string; bots?: string[] }) =>
+    request<User>(`/auth/users/${encodeURIComponent(username)}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  deleteUser: (username: string) =>
+    request<{ deleted: string }>(`/auth/users/${encodeURIComponent(username)}`, { method: "DELETE" }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ ok: boolean }>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+
+  // Config & fleet
   getConfig: () => request<PortalConfig>("/config"),
   getFleetStats: () => request<FleetStats>("/fleet/stats"),
   listBots: () => request<Bot[]>("/bots"),

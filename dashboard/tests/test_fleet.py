@@ -1,5 +1,6 @@
 import copy
 import json
+import tarfile
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -7,6 +8,20 @@ from unittest.mock import MagicMock
 import pytest
 
 from app import (
+    SESSIONS,
+    _bootstrap_admin,
+    _bot_name_from_port,
+    _cleanup_expired_sessions,
+    _create_session,
+    _get_session,
+    _grant_bot_to_user,
+    _hash_password,
+    _invalidate_user_sessions,
+    _load_users,
+    _PORT_TO_BOT,
+    _save_users,
+    _user_can_access_bot,
+    _verify_password,
     allocate_port,
     create_backup,
     deep_merge,
@@ -18,6 +33,7 @@ from app import (
     get_bot_storage,
     get_fleet_stats,
     list_backups,
+    prune_scheduled_backups,
     read_meta,
     rollback_to_backup,
     sanitize_name,
@@ -235,16 +251,19 @@ class TestMetadata:
 # Backup (tests 21–26)
 # ===========================================================================
 class TestBackup:
-    def test_create_backup_copies_files(self, bot_env):
+    def test_create_backup_creates_tar_gz(self, bot_env):
         bots_dir = bot_env["bots_dir"]
         _create_test_bot(bots_dir, "mybot")
         write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
 
         result = create_backup("mybot")
         ts = result["timestamp"]
-        backup_dir = bots_dir / "mybot" / ".backups" / ts
-        assert (backup_dir / "config.json").exists()
-        assert (backup_dir / "SOUL.md").exists()
+        tar_path = bots_dir / "mybot" / ".backups" / f"{ts}.tar.gz"
+        assert tar_path.exists()
+        with tarfile.open(tar_path, "r:gz") as tar:
+            names = tar.getnames()
+            assert "config.json" in names
+            assert "SOUL.md" in names
 
     def test_create_backup_updates_meta(self, bot_env):
         bots_dir = bot_env["bots_dir"]
@@ -255,6 +274,17 @@ class TestBackup:
         meta = read_meta("mybot")
         assert len(meta["backups"]) == 1
         assert meta["backups"][0]["label"] == "manual"
+
+    def test_backup_size_in_metadata(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        result = create_backup("mybot")
+        assert "size_bytes" in result
+        assert result["size_bytes"] > 0
+        meta = read_meta("mybot")
+        assert meta["backups"][0]["size_bytes"] > 0
 
     def test_list_backups_returns_entries(self, bot_env):
         bots_dir = bot_env["bots_dir"]
@@ -287,6 +317,21 @@ class TestBackup:
         assert len(backups) == 2
         assert backups[0]["label"] == "first"
         assert backups[1]["label"] == "second"
+
+    def test_backup_to_external_dir(self, bot_env, monkeypatch):
+        bots_dir = bot_env["bots_dir"]
+        ext_dir = bot_env["bots_dir"].parent / "ext_backups"
+        ext_dir.mkdir()
+        monkeypatch.setattr("app.BACKUP_DIR", ext_dir)
+
+        _create_test_bot(bots_dir, "mybot")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        result = create_backup("mybot")
+        ts = result["timestamp"]
+        assert (ext_dir / "mybot" / f"{ts}.tar.gz").exists()
+        # Should NOT be in the bot's own .backups/
+        assert not (bots_dir / "mybot" / ".backups" / f"{ts}.tar.gz").exists()
 
 
 # ===========================================================================
@@ -352,6 +397,53 @@ class TestRollback:
     def test_rollback_nonexistent_bot_raises(self, bot_env):
         with pytest.raises(FileNotFoundError):
             rollback_to_backup("ghost", "20260101T000000")
+
+    def test_rollback_from_old_directory_backup(self, bot_env):
+        """Backward compat: rollback works from old directory-based backups."""
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot", config={"version": "v1"}, soul="soul v1")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        # Manually create an old-style directory backup
+        ts = "20250101T000000"
+        backup_dir = bots_dir / "mybot" / ".backups" / ts
+        backup_dir.mkdir(parents=True)
+        (backup_dir / "config.json").write_text(json.dumps({"version": "v1"}))
+        (backup_dir / "SOUL.md").write_text("soul v1")
+
+        meta = read_meta("mybot")
+        meta["backups"].append({"timestamp": ts, "created_at": "x", "label": "manual"})
+        write_meta("mybot", meta)
+
+        # Modify current state
+        (bots_dir / "mybot" / "config.json").write_text(json.dumps({"version": "v2"}))
+
+        rollback_to_backup("mybot", ts)
+
+        restored = json.loads((bots_dir / "mybot" / "config.json").read_text())
+        assert restored["version"] == "v1"
+
+    def test_rollback_from_external_backup(self, bot_env, monkeypatch):
+        """Rollback works when backup is in external BACKUP_DIR."""
+        bots_dir = bot_env["bots_dir"]
+        ext_dir = bots_dir.parent / "ext_backups"
+        ext_dir.mkdir()
+        monkeypatch.setattr("app.BACKUP_DIR", ext_dir)
+
+        _create_test_bot(bots_dir, "mybot", config={"version": "v1"}, soul="soul v1")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        result = create_backup("mybot")
+        ts = result["timestamp"]
+
+        # Modify current state
+        (bots_dir / "mybot" / "config.json").write_text(json.dumps({"version": "v2"}))
+
+        time.sleep(1.1)
+        rollback_to_backup("mybot", ts)
+
+        restored = json.loads((bots_dir / "mybot" / "config.json").read_text())
+        assert restored["version"] == "v1"
 
 
 # ===========================================================================
@@ -487,12 +579,22 @@ class TestOpenClawStateBackup:
         (agents_dir / "sess1.json").write_text('{"id":"s1"}')
         return bot_dir
 
+    def _tar_contents(self, bots_dir, name, ts):
+        """Extract tar.gz to a temp dir and return the root path."""
+        tar_path = bots_dir / name / ".backups" / f"{ts}.tar.gz"
+        extract_dir = bots_dir / name / ".backups" / f"{ts}_extracted"
+        extract_dir.mkdir()
+        with tarfile.open(tar_path, "r:gz") as tar:
+            tar.extractall(path=str(extract_dir), filter="data")
+        return extract_dir
+
     def test_backup_includes_openclaw_workspace(self, bot_env):
         bots_dir = bot_env["bots_dir"]
         self._setup_bot_with_openclaw(bots_dir, "stateful")
         result = create_backup("stateful")
         ts = result["timestamp"]
-        backup_oc = bots_dir / "stateful" / ".backups" / ts / ".openclaw"
+        extracted = self._tar_contents(bots_dir, "stateful", ts)
+        backup_oc = extracted / ".openclaw"
         assert (backup_oc / "workspace" / "SOUL.md").read_text() == "pirate soul"
         assert (backup_oc / "workspace" / "MEMORY.md").read_text() == "remembers the kraken"
         assert (backup_oc / "workspace" / "memory" / "facts.md").read_text() == "fact 1"
@@ -502,18 +604,19 @@ class TestOpenClawStateBackup:
         self._setup_bot_with_openclaw(bots_dir, "stateful")
         result = create_backup("stateful")
         ts = result["timestamp"]
-        backup_oc = bots_dir / "stateful" / ".backups" / ts / ".openclaw"
+        extracted = self._tar_contents(bots_dir, "stateful", ts)
+        backup_oc = extracted / ".openclaw"
         assert (backup_oc / "agents" / "main" / "sessions" / "sess1.json").exists()
 
     def test_backup_excludes_temp_files(self, bot_env):
         bots_dir = bot_env["bots_dir"]
         bot_dir = self._setup_bot_with_openclaw(bots_dir, "stateful")
-        # Add files that should be excluded
         (bot_dir / ".openclaw" / "openclaw.json.bak").write_text("backup")
         (bot_dir / ".openclaw" / "update-check.json").write_text("{}")
         result = create_backup("stateful")
         ts = result["timestamp"]
-        backup_oc = bots_dir / "stateful" / ".backups" / ts / ".openclaw"
+        extracted = self._tar_contents(bots_dir, "stateful", ts)
+        backup_oc = extracted / ".openclaw"
         assert not (backup_oc / "openclaw.json.bak").exists()
         assert not (backup_oc / "update-check.json").exists()
 
@@ -525,7 +628,8 @@ class TestOpenClawStateBackup:
         (logs_dir / "output.log").write_text("big log file")
         result = create_backup("stateful")
         ts = result["timestamp"]
-        backup_oc = bots_dir / "stateful" / ".backups" / ts / ".openclaw"
+        extracted = self._tar_contents(bots_dir, "stateful", ts)
+        backup_oc = extracted / ".openclaw"
         assert not (backup_oc / "logs").exists()
 
 
@@ -774,3 +878,503 @@ class TestFleetStats:
         assert result["running_bots"] == 0
         assert result["total_cpu_percent"] == 0
         assert result["total_storage_bytes"] == 0
+
+
+# ===========================================================================
+# Backup Retention (pruning)
+# ===========================================================================
+class TestBackupRetention:
+    def test_prune_removes_oldest_scheduled(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        # Create 5 scheduled backups
+        for i in range(5):
+            create_backup("mybot", label="scheduled")
+            time.sleep(1.1)
+
+        assert len(list_backups("mybot")) == 5
+        pruned = prune_scheduled_backups("mybot", keep=2)
+        assert pruned == 3
+        remaining = list_backups("mybot")
+        assert len(remaining) == 2
+        # All remaining should be scheduled
+        assert all(b["label"] == "scheduled" for b in remaining)
+
+    def test_prune_preserves_manual_backups(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        create_backup("mybot", label="manual")
+        time.sleep(1.1)
+        create_backup("mybot", label="scheduled")
+        time.sleep(1.1)
+        create_backup("mybot", label="scheduled")
+
+        pruned = prune_scheduled_backups("mybot", keep=1)
+        assert pruned == 1
+        remaining = list_backups("mybot")
+        labels = [b["label"] for b in remaining]
+        assert "manual" in labels
+        assert labels.count("scheduled") == 1
+
+    def test_prune_noop_when_under_limit(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        create_backup("mybot", label="scheduled")
+        pruned = prune_scheduled_backups("mybot", keep=5)
+        assert pruned == 0
+        assert len(list_backups("mybot")) == 1
+
+    def test_prune_deletes_tar_files(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        r1 = create_backup("mybot", label="scheduled")
+        time.sleep(1.1)
+        create_backup("mybot", label="scheduled")
+
+        tar1 = bots_dir / "mybot" / ".backups" / f"{r1['timestamp']}.tar.gz"
+        assert tar1.exists()
+
+        prune_scheduled_backups("mybot", keep=1)
+        assert not tar1.exists()
+
+
+# ===========================================================================
+# Auth helpers — fixtures
+# ===========================================================================
+@pytest.fixture(autouse=False)
+def auth_env(monkeypatch, tmp_path):
+    """Auth test environment with temp users file and clean sessions."""
+    bots_dir = tmp_path / "bots"
+    bots_dir.mkdir()
+    users_file = bots_dir / ".users.json"
+    monkeypatch.setattr("app.BOTS_DIR", bots_dir)
+    monkeypatch.setenv("USERS_FILE", str(users_file))
+    monkeypatch.setattr("app.AUTH_DISABLED", False)
+    monkeypatch.setattr("app.SESSION_TTL", 3600)
+    monkeypatch.setattr("app.ADMIN_USER", "admin")
+    SESSIONS.clear()
+    _PORT_TO_BOT.clear()
+    yield {"bots_dir": bots_dir, "users_file": users_file}
+    SESSIONS.clear()
+    _PORT_TO_BOT.clear()
+
+
+# ===========================================================================
+# Password Hashing (tests 70–71)
+# ===========================================================================
+class TestPasswordHashing:
+    def test_hash_and_verify(self, auth_env):
+        h = _hash_password("secret123")
+        assert h != "secret123"
+        assert _verify_password("secret123", h) is True
+
+    def test_wrong_password_fails(self, auth_env):
+        h = _hash_password("correct")
+        assert _verify_password("wrong", h) is False
+
+
+# ===========================================================================
+# Session Lifecycle (tests 72–76)
+# ===========================================================================
+class TestSessionLifecycle:
+    def _make_user(self, auth_env, username="alice", role="user", bots=None):
+        users = _load_users()
+        users[username] = {
+            "password_hash": _hash_password("pass"),
+            "role": role,
+            "bots": bots or [],
+        }
+        _save_users(users)
+
+    def test_create_and_get_session(self, auth_env):
+        self._make_user(auth_env, "alice")
+        token = _create_session("alice")
+        session = _get_session(token)
+        assert session is not None
+        assert session["username"] == "alice"
+
+    def test_invalid_token_returns_none(self, auth_env):
+        assert _get_session("bogus-token") is None
+
+    def test_expired_session_returns_none(self, auth_env, monkeypatch):
+        monkeypatch.setattr("app.SESSION_TTL", 1)
+        self._make_user(auth_env, "alice")
+        token = _create_session("alice")
+        time.sleep(1.1)
+        assert _get_session(token) is None
+
+    def test_deleted_user_invalidates_session(self, auth_env):
+        self._make_user(auth_env, "alice")
+        token = _create_session("alice")
+        # Delete user from file
+        users = _load_users()
+        del users["alice"]
+        _save_users(users)
+        assert _get_session(token) is None
+
+    def test_cleanup_expired_sessions(self, auth_env, monkeypatch):
+        monkeypatch.setattr("app.SESSION_TTL", 1)
+        self._make_user(auth_env, "alice")
+        _create_session("alice")
+        _create_session("alice")
+        time.sleep(1.1)
+        removed = _cleanup_expired_sessions()
+        assert removed == 2
+        assert len(SESSIONS) == 0
+
+
+# ===========================================================================
+# RBAC Checks (tests 77–81)
+# ===========================================================================
+class TestRBAC:
+    def test_admin_can_access_any_bot(self, auth_env):
+        session = {"username": "admin", "role": "admin", "bots": []}
+        assert _user_can_access_bot(session, "any-bot") is True
+
+    def test_wildcard_grants_all_access(self, auth_env):
+        session = {"username": "alice", "role": "user", "bots": ["*"]}
+        assert _user_can_access_bot(session, "any-bot") is True
+
+    def test_specific_bot_access(self, auth_env):
+        session = {"username": "alice", "role": "user", "bots": ["bot-a", "bot-b"]}
+        assert _user_can_access_bot(session, "bot-a") is True
+        assert _user_can_access_bot(session, "bot-c") is False
+
+    def test_empty_bots_denies_access(self, auth_env):
+        session = {"username": "alice", "role": "user", "bots": []}
+        assert _user_can_access_bot(session, "any-bot") is False
+
+    def test_port_to_bot_cache(self, auth_env):
+        _PORT_TO_BOT[3001] = "my-bot"
+        assert _bot_name_from_port(3001) == "my-bot"
+        assert _bot_name_from_port(9999) is None
+
+
+# ===========================================================================
+# User Bootstrap (tests 82–84)
+# ===========================================================================
+class TestUserBootstrap:
+    def test_bootstrap_creates_admin(self, auth_env, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "test-pass-123")
+        _bootstrap_admin()
+        users = _load_users()
+        assert "admin" in users
+        assert users["admin"]["role"] == "admin"
+        assert _verify_password("test-pass-123", users["admin"]["password_hash"])
+
+    def test_bootstrap_skips_if_users_exist(self, auth_env, monkeypatch):
+        monkeypatch.setenv("ADMIN_PASSWORD", "first")
+        _bootstrap_admin()
+        monkeypatch.setenv("ADMIN_PASSWORD", "second")
+        _bootstrap_admin()
+        users = _load_users()
+        # Password should still be "first" — second bootstrap was skipped
+        assert _verify_password("first", users["admin"]["password_hash"])
+
+    def test_bootstrap_generates_random_password(self, auth_env, monkeypatch, capsys):
+        monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+        _bootstrap_admin()
+        users = _load_users()
+        assert "admin" in users
+        output = capsys.readouterr().out
+        assert "Generated admin password" in output
+
+
+# ===========================================================================
+# Session Invalidation (tests 85–86)
+# ===========================================================================
+class TestSessionInvalidation:
+    def test_invalidate_user_sessions(self, auth_env):
+        users = {"alice": {"password_hash": _hash_password("p"), "role": "user", "bots": []}}
+        _save_users(users)
+        t1 = _create_session("alice")
+        t2 = _create_session("alice")
+        removed = _invalidate_user_sessions("alice")
+        assert removed == 2
+        assert _get_session(t1) is None
+        assert _get_session(t2) is None
+
+    def test_invalidate_only_target_user(self, auth_env):
+        users = {
+            "alice": {"password_hash": _hash_password("p"), "role": "user", "bots": []},
+            "bob": {"password_hash": _hash_password("p"), "role": "user", "bots": []},
+        }
+        _save_users(users)
+        _create_session("alice")
+        bob_token = _create_session("bob")
+        _invalidate_user_sessions("alice")
+        assert _get_session(bob_token) is not None
+
+
+# ===========================================================================
+# Integration tests (FastAPI TestClient) (tests 87–98)
+# ===========================================================================
+class TestAuthAPI:
+    @pytest.fixture(autouse=True)
+    def setup(self, auth_env, monkeypatch):
+        """Set up test client and seed admin user."""
+        from fastapi.testclient import TestClient
+        from app import app
+        monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+        _bootstrap_admin()
+        self.client = TestClient(app)
+        self.auth_env = auth_env
+
+    def _login_client(self, username="admin", password="admin-pass"):
+        """Login and return a fresh client with the session cookie set."""
+        from fastapi.testclient import TestClient
+        from app import app
+        c = TestClient(app)
+        r = c.post("/api/auth/login", json={"username": username, "password": password})
+        assert r.status_code == 200
+        # Transfer the cookie to the client's cookie jar
+        token = r.cookies.get("cfm_session")
+        if token:
+            c.cookies.set("cfm_session", token)
+        return c
+
+    def test_login_sets_cookie(self):
+        r = self.client.post("/api/auth/login", json={"username": "admin", "password": "admin-pass"})
+        assert r.status_code == 200
+        assert "cfm_session" in r.cookies
+
+    def test_login_wrong_password(self):
+        r = self.client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
+        assert r.status_code == 401
+
+    def test_verify_returns_x_user(self):
+        c = self._login_client()
+        r = c.get("/api/auth/verify")
+        assert r.status_code == 200
+        assert r.headers.get("x-forwarded-user") == "admin"
+
+    def test_verify_without_cookie(self):
+        r = self.client.get("/api/auth/verify")
+        assert r.status_code == 401
+
+    def test_me_returns_user_info(self):
+        c = self._login_client()
+        r = c.get("/api/auth/me")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["username"] == "admin"
+        assert data["role"] == "admin"
+
+    def test_logout_clears_session(self):
+        c = self._login_client()
+        c.post("/api/auth/logout")
+        r = c.get("/api/auth/me")
+        assert r.status_code == 401
+
+    def test_create_user(self):
+        c = self._login_client()
+        r = c.post("/api/auth/users", json={
+            "username": "alice", "password": "alice-pass", "role": "user", "bots": ["bot-a"],
+        })
+        assert r.status_code == 200
+        assert r.json()["username"] == "alice"
+
+    def test_list_users(self):
+        c = self._login_client()
+        c.post("/api/auth/users", json={
+            "username": "bob", "password": "bob-pass", "role": "user", "bots": [],
+        })
+        r = c.get("/api/auth/users")
+        assert r.status_code == 200
+        names = [u["username"] for u in r.json()]
+        assert "admin" in names
+        assert "bob" in names
+
+    def test_update_user(self):
+        c = self._login_client()
+        c.post("/api/auth/users", json={
+            "username": "carol", "password": "p", "role": "user", "bots": [],
+        })
+        r = c.put("/api/auth/users/carol", json={
+            "role": "admin", "bots": ["*"],
+        })
+        assert r.status_code == 200
+        assert r.json()["role"] == "admin"
+
+    def test_delete_user(self):
+        c = self._login_client()
+        c.post("/api/auth/users", json={
+            "username": "dave", "password": "p", "role": "user", "bots": [],
+        })
+        r = c.delete("/api/auth/users/dave")
+        assert r.status_code == 200
+        assert r.json()["deleted"] == "dave"
+
+    def test_cannot_delete_self(self):
+        c = self._login_client()
+        r = c.delete("/api/auth/users/admin")
+        assert r.status_code == 400
+
+    def test_cannot_delete_last_admin(self):
+        c = self._login_client()
+        # Create another admin
+        c.post("/api/auth/users", json={
+            "username": "admin2", "password": "p", "role": "admin", "bots": ["*"],
+        })
+        # Login as admin2 and delete admin (OK — admin2 is still an admin)
+        c2 = self._login_client("admin2", "p")
+        r = c2.delete("/api/auth/users/admin")
+        assert r.status_code == 200
+        # Now try to delete admin2 (the last admin) — should fail (can't delete self)
+        r2 = c2.delete("/api/auth/users/admin2")
+        assert r2.status_code == 400
+
+    def test_non_admin_cannot_list_users(self):
+        c = self._login_client()
+        c.post("/api/auth/users", json={
+            "username": "eve", "password": "eve-pass", "role": "user", "bots": ["*"],
+        })
+        c2 = self._login_client("eve", "eve-pass")
+        r = c2.get("/api/auth/users")
+        assert r.status_code == 403
+
+    def test_verify_with_port_rbac(self):
+        """Test that verify checks per-bot RBAC when X-Original-Port is set."""
+        c = self._login_client()
+        c.post("/api/auth/users", json={
+            "username": "limited", "password": "lp", "role": "user", "bots": ["bot-a"],
+        })
+        c2 = self._login_client("limited", "lp")
+        # Set up port cache
+        _PORT_TO_BOT[3001] = "bot-a"
+        _PORT_TO_BOT[3002] = "bot-b"
+        # Access allowed bot
+        r = c2.get("/api/auth/verify", headers={"X-Original-Port": "3001"})
+        assert r.status_code == 200
+        # Access denied bot
+        r2 = c2.get("/api/auth/verify", headers={"X-Original-Port": "3002"})
+        assert r2.status_code == 403
+
+
+# ===========================================================================
+# Creator tracking
+# ===========================================================================
+class TestCreatedBy:
+    def test_created_by_stored_in_meta(self, bot_env):
+        config = {"llm": {"baseUrl": "http://x", "model": "m"}, "gateway": {"port": 3000}}
+        write_bot_files("test-bot", config, created_by="alice")
+        meta = read_meta("test-bot")
+        assert meta["created_by"] == "alice"
+
+    def test_created_by_none_when_not_provided(self, bot_env):
+        config = {"llm": {"baseUrl": "http://x", "model": "m"}, "gateway": {"port": 3000}}
+        write_bot_files("test-bot", config)
+        meta = read_meta("test-bot")
+        assert meta.get("created_by") is None
+
+
+# ===========================================================================
+# Grant bot to user
+# ===========================================================================
+class TestGrantBotToUser:
+    @pytest.fixture(autouse=True)
+    def setup(self, auth_env):
+        self.auth_env = auth_env
+
+    def test_grant_adds_bot(self):
+        users = {"alice": {"password_hash": _hash_password("p"), "role": "user", "bots": ["bot-a"]}}
+        _save_users(users)
+        _grant_bot_to_user("alice", "bot-b")
+        users = _load_users()
+        assert "bot-b" in users["alice"]["bots"]
+
+    def test_grant_noop_for_admin(self):
+        _bootstrap_admin()
+        _grant_bot_to_user("admin", "some-bot")
+        users = _load_users()
+        assert "some-bot" not in users["admin"]["bots"]
+
+    def test_grant_noop_for_wildcard(self):
+        users = {"alice": {"password_hash": _hash_password("p"), "role": "user", "bots": ["*"]}}
+        _save_users(users)
+        _grant_bot_to_user("alice", "bot-c")
+        users = _load_users()
+        assert users["alice"]["bots"] == ["*"]
+
+    def test_grant_noop_if_already_present(self):
+        users = {"alice": {"password_hash": _hash_password("p"), "role": "user", "bots": ["bot-a"]}}
+        _save_users(users)
+        _grant_bot_to_user("alice", "bot-a")
+        users = _load_users()
+        assert users["alice"]["bots"].count("bot-a") == 1
+
+    def test_grant_noop_for_missing_user(self):
+        users = {}
+        _save_users(users)
+        _grant_bot_to_user("nobody", "bot-a")
+        users = _load_users()
+        assert "nobody" not in users
+
+
+# ===========================================================================
+# RBAC endpoint enforcement
+# ===========================================================================
+class TestRBACEndpoints:
+    @pytest.fixture(autouse=True)
+    def setup(self, auth_env, monkeypatch):
+        from app import app
+        from fastapi.testclient import TestClient
+        monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+        _bootstrap_admin()
+        self.client = TestClient(app)
+
+    def _login_client(self, username="admin", password="admin-pass"):
+        from app import app
+        from fastapi.testclient import TestClient
+        c = TestClient(app)
+        r = c.post("/api/auth/login", json={"username": username, "password": password})
+        token = r.cookies.get("cfm_session")
+        if token:
+            c.cookies.set("cfm_session", token)
+        return c
+
+    def test_list_bots_requires_auth(self):
+        r = self.client.get("/api/bots")
+        assert r.status_code == 401
+
+    def test_fleet_stats_requires_auth(self):
+        r = self.client.get("/api/fleet/stats")
+        assert r.status_code == 401
+
+    def test_change_password(self):
+        c = self._login_client()
+        r = c.post("/api/auth/change-password", json={
+            "current_password": "admin-pass",
+            "new_password": "new-pass",
+        })
+        assert r.status_code == 200
+        # Old password should fail
+        r2 = self.client.post("/api/auth/login", json={"username": "admin", "password": "admin-pass"})
+        assert r2.status_code == 401
+        # New password should work
+        r3 = self.client.post("/api/auth/login", json={"username": "admin", "password": "new-pass"})
+        assert r3.status_code == 200
+
+    def test_change_password_wrong_current(self):
+        c = self._login_client()
+        r = c.post("/api/auth/change-password", json={
+            "current_password": "wrong",
+            "new_password": "new-pass",
+        })
+        assert r.status_code == 401
+
+    def test_change_password_empty(self):
+        c = self._login_client()
+        r = c.post("/api/auth/change-password", json={
+            "current_password": "admin-pass",
+            "new_password": "   ",
+        })
+        assert r.status_code == 400

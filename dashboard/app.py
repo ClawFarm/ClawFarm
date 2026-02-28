@@ -2,14 +2,20 @@ import copy
 import json
 import os
 import re
+import secrets
 import shutil
+import tarfile
+import tempfile
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import bcrypt
 import docker
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -20,6 +26,188 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 TEMPLATE_DIR = Path(os.environ.get("TEMPLATE_DIR", Path(__file__).resolve().parent.parent / "bot-template"))
 BOTS_DIR = Path(os.environ.get("BOTS_DIR", Path(__file__).resolve().parent.parent / "bots"))
+_backup_dir_env = os.environ.get("BACKUP_DIR", "")
+BACKUP_DIR = Path(_backup_dir_env) if _backup_dir_env else None
+BACKUP_INTERVAL_SECONDS = int(os.environ.get("BACKUP_INTERVAL_SECONDS", "3600"))
+BACKUP_KEEP = int(os.environ.get("BACKUP_KEEP", "24"))
+
+# ---------------------------------------------------------------------------
+# Auth & RBAC
+# ---------------------------------------------------------------------------
+USERS_FILE = Path(os.environ.get("USERS_FILE", ""))  # resolved lazily after BOTS_DIR
+SESSION_TTL = int(os.environ.get("SESSION_TTL", "86400"))  # 24h default
+AUTH_DISABLED = os.environ.get("AUTH_DISABLED", "").lower() in ("1", "true", "yes")
+ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
+SESSIONS: dict[str, dict] = {}  # token -> {username, role, bots, created_at}
+_PORT_TO_BOT: dict[int, str] = {}  # port -> bot_name, rebuilt by _sync_caddy_config
+
+
+def _users_file_path() -> Path:
+    """Return the resolved path to users.json."""
+    env = os.environ.get("USERS_FILE", "")
+    if env:
+        return Path(env)
+    return BOTS_DIR / ".users.json"
+
+
+def _load_users() -> dict:
+    """Load users from JSON file. Returns {username: {password_hash, role, bots}}."""
+    path = _users_file_path()
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_users(users: dict) -> None:
+    """Atomically write users to JSON file."""
+    path = _users_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(users, f, indent=2)
+        os.replace(tmp, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except Exception:
+        return False
+
+
+def _bootstrap_admin() -> None:
+    """Create default admin user if users file is empty or missing."""
+    users = _load_users()
+    if users:
+        return
+    password = os.environ.get("ADMIN_PASSWORD", "")
+    if not password:
+        password = secrets.token_urlsafe(16)
+        print(f"[AUTH] Generated admin password for '{ADMIN_USER}': {password}")
+    users[ADMIN_USER] = {
+        "password_hash": _hash_password(password),
+        "role": "admin",
+        "bots": ["*"],
+    }
+    _save_users(users)
+    print(f"[AUTH] Created admin user: {ADMIN_USER}")
+
+
+def _create_session(username: str) -> str:
+    """Create a new session token for a user. Returns the token."""
+    token = secrets.token_urlsafe(32)
+    users = _load_users()
+    user = users.get(username, {})
+    SESSIONS[token] = {
+        "username": username,
+        "role": user.get("role", "user"),
+        "bots": user.get("bots", []),
+        "created_at": time.time(),
+    }
+    return token
+
+
+def _get_session(token: str) -> dict | None:
+    """Validate a session token. Re-reads users.json for current RBAC. Returns None if invalid."""
+    session = SESSIONS.get(token)
+    if not session:
+        return None
+    # Check expiry
+    if time.time() - session["created_at"] > SESSION_TTL:
+        SESSIONS.pop(token, None)
+        return None
+    # Re-read user data for always-current permissions
+    users = _load_users()
+    user = users.get(session["username"])
+    if not user:
+        # User was deleted
+        SESSIONS.pop(token, None)
+        return None
+    # Update session with current permissions
+    session["role"] = user.get("role", "user")
+    session["bots"] = user.get("bots", [])
+    return session
+
+
+def _cleanup_expired_sessions() -> int:
+    """Remove all expired sessions. Returns count removed."""
+    now = time.time()
+    expired = [t for t, s in SESSIONS.items() if now - s["created_at"] > SESSION_TTL]
+    for t in expired:
+        del SESSIONS[t]
+    return len(expired)
+
+
+def _invalidate_user_sessions(username: str) -> int:
+    """Remove all sessions for a given user. Returns count removed."""
+    to_remove = [t for t, s in SESSIONS.items() if s["username"] == username]
+    for t in to_remove:
+        del SESSIONS[t]
+    return len(to_remove)
+
+
+def _user_can_access_bot(session: dict, bot_name: str) -> bool:
+    """Check if user's session grants access to a specific bot."""
+    if session["role"] == "admin":
+        return True
+    bots = session.get("bots", [])
+    if "*" in bots:
+        return True
+    return bot_name in bots
+
+
+def _bot_name_from_port(port: int) -> str | None:
+    """Look up bot name from port using the cache. Returns None if not found."""
+    return _PORT_TO_BOT.get(port)
+
+
+def _grant_bot_to_user(username: str, bot_name: str) -> None:
+    """Add bot_name to a user's bots list (no-op for admins/wildcard)."""
+    users = _load_users()
+    user = users.get(username)
+    if not user:
+        return
+    if user.get("role") == "admin":
+        return
+    bots = user.get("bots", [])
+    if "*" in bots or bot_name in bots:
+        return
+    bots.append(bot_name)
+    user["bots"] = bots
+    _save_users(users)
+
+
+def _require_session(cfm_session: str | None = Cookie(None)) -> dict:
+    """FastAPI dependency: require a valid session. Returns session dict."""
+    if AUTH_DISABLED:
+        return {"username": "dev", "role": "admin", "bots": ["*"]}
+    session = _get_session(cfm_session) if cfm_session else None
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return session
+
+
+def _require_bot_access(name: str, session: dict = Depends(_require_session)) -> dict:
+    """FastAPI dependency: require session + access to a specific bot."""
+    sname = sanitize_name(name)
+    if not _user_can_access_bot(session, sname):
+        raise HTTPException(status_code=403, detail=f"Access denied to bot {sname!r}")
+    return {**session, "_bot_name": sname}
+
 
 # ---------------------------------------------------------------------------
 # Lazy Docker client
@@ -134,38 +322,65 @@ def _copy_openclaw_state(src_oc: Path, dst_oc: Path, *, exclude_logs: bool = Fal
             shutil.copy2(item, dst)
 
 
+def _backup_base_dir(name: str) -> Path:
+    """Return the directory where backups are stored for a bot."""
+    if BACKUP_DIR:
+        d = BACKUP_DIR / name
+    else:
+        d = BOTS_DIR / name / ".backups"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _tar_exclude_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    """Filter for tarfile.add() — skip logs, temp files, .bak files."""
+    parts = Path(tarinfo.name).parts
+    # Skip logs directory inside .openclaw/
+    if "logs" in parts:
+        return None
+    basename = Path(tarinfo.name).name
+    if basename == "update-check.json":
+        return None
+    if ".bak" in basename:
+        return None
+    return tarinfo
+
+
 def create_backup(name: str, label: str = "manual") -> dict:
-    """Snapshot full agent state: config.json, SOUL.md, and .openclaw/ directory."""
+    """Snapshot full agent state as a compressed tar.gz archive."""
     bot_dir = BOTS_DIR / name
     if not bot_dir.exists():
         raise FileNotFoundError(f"Bot directory not found: {name}")
 
     ts = _now_timestamp()
-    backup_dir = bot_dir / ".backups" / ts
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_base = _backup_base_dir(name)
+    tar_path = backup_base / f"{ts}.tar.gz"
 
-    # Copy root-level bot files
-    config_src = bot_dir / "config.json"
-    soul_src = bot_dir / "SOUL.md"
-    if config_src.exists():
-        shutil.copy2(config_src, backup_dir / "config.json")
-    if soul_src.exists():
-        shutil.copy2(soul_src, backup_dir / "SOUL.md")
+    with tarfile.open(tar_path, "w:gz") as tar:
+        # Add root-level bot files
+        config_src = bot_dir / "config.json"
+        soul_src = bot_dir / "SOUL.md"
+        if config_src.exists():
+            tar.add(str(config_src), arcname="config.json")
+        if soul_src.exists():
+            tar.add(str(soul_src), arcname="SOUL.md")
 
-    # Copy full .openclaw/ state (workspace, agents, cron, config)
-    src_oc = bot_dir / ".openclaw"
-    if src_oc.exists():
-        dst_oc = backup_dir / ".openclaw"
-        dst_oc.mkdir(exist_ok=True)
-        _copy_openclaw_state(src_oc, dst_oc, exclude_logs=True)
+        # Add full .openclaw/ state with exclusion filter
+        src_oc = bot_dir / ".openclaw"
+        if src_oc.exists():
+            tar.add(str(src_oc), arcname=".openclaw", filter=_tar_exclude_filter)
 
+    size_bytes = tar_path.stat().st_size
     now = _now_iso()
     meta = ensure_meta(name)
-    meta["backups"].append({"timestamp": ts, "created_at": now, "label": label})
+    meta["backups"].append({
+        "timestamp": ts, "created_at": now, "label": label,
+        "size_bytes": size_bytes,
+    })
     meta["modified_at"] = now
     write_meta(name, meta)
 
-    return {"timestamp": ts, "created_at": now, "label": label}
+    return {"timestamp": ts, "created_at": now, "label": label, "size_bytes": size_bytes}
 
 
 def list_backups(name: str) -> list[dict]:
@@ -174,19 +389,61 @@ def list_backups(name: str) -> list[dict]:
     return meta.get("backups", [])
 
 
-def rollback_to_backup(name: str, timestamp: str) -> dict:
-    """Auto-backup current state, then restore full agent state from backup."""
-    bot_dir = BOTS_DIR / name
-    if not bot_dir.exists():
-        raise FileNotFoundError(f"Bot directory not found: {name}")
+def _find_backup(name: str, timestamp: str) -> tuple[Path | None, str]:
+    """Locate a backup — returns (path, kind) where kind is 'tar' or 'dir'.
 
-    backup_dir = bot_dir / ".backups" / timestamp
-    if not backup_dir.exists():
-        raise ValueError(f"Backup not found: {timestamp}")
+    Checks both external BACKUP_DIR and in-bot .backups/ for compatibility.
+    """
+    # Check tar.gz in all possible locations
+    for base in [BACKUP_DIR / name if BACKUP_DIR else None, BOTS_DIR / name / ".backups"]:
+        if base is None:
+            continue
+        tar_path = base / f"{timestamp}.tar.gz"
+        if tar_path.exists():
+            return tar_path, "tar"
+    # Backward compat: old directory-based backups
+    dir_path = BOTS_DIR / name / ".backups" / timestamp
+    if dir_path.is_dir():
+        return dir_path, "dir"
+    return None, ""
 
-    # Safety: auto-backup current state before overwriting
-    create_backup(name, label="pre-rollback")
 
+def _rollback_from_tar(tar_path: Path, bot_dir: Path) -> None:
+    """Restore bot state from a tar.gz backup."""
+    dst_oc = bot_dir / ".openclaw"
+
+    # Preserve gateway auth token
+    existing_token = ""
+    oc_json = dst_oc / "openclaw.json"
+    if oc_json.exists():
+        try:
+            cfg = json.loads(oc_json.read_text())
+            existing_token = cfg.get("gateway", {}).get("auth", {}).get("token", "")
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Clear workspace, agents, cron before extracting
+    for subdir in ("workspace", "agents", "cron"):
+        target = dst_oc / subdir
+        if target.exists():
+            shutil.rmtree(target)
+
+    with tarfile.open(tar_path, "r:gz") as tar:
+        tar.extractall(path=str(bot_dir), filter="data")
+
+    # Re-inject gateway token
+    if existing_token and oc_json.exists():
+        try:
+            cfg = json.loads(oc_json.read_text())
+            cfg.setdefault("gateway", {}).setdefault("auth", {})["token"] = existing_token
+            with open(oc_json, "w") as f:
+                json.dump(cfg, f, indent=2)
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+
+def _rollback_from_dir(backup_dir: Path, bot_dir: Path) -> None:
+    """Restore bot state from an old directory-based backup (backward compat)."""
     # Restore root-level files
     backup_config = backup_dir / "config.json"
     backup_soul = backup_dir / "SOUL.md"
@@ -199,7 +456,6 @@ def rollback_to_backup(name: str, timestamp: str) -> dict:
     backup_oc = backup_dir / ".openclaw"
     if backup_oc.exists():
         dst_oc = bot_dir / ".openclaw"
-        # Preserve gateway auth token so the bot stays accessible
         existing_token = ""
         oc_json = dst_oc / "openclaw.json"
         if oc_json.exists():
@@ -209,7 +465,6 @@ def rollback_to_backup(name: str, timestamp: str) -> dict:
             except (json.JSONDecodeError, KeyError):
                 pass
 
-        # Clear workspace and agents, then restore from backup
         for subdir in ("workspace", "agents", "cron"):
             target = dst_oc / subdir
             if target.exists():
@@ -217,7 +472,6 @@ def rollback_to_backup(name: str, timestamp: str) -> dict:
 
         _copy_openclaw_state(backup_oc, dst_oc)
 
-        # Re-inject the current gateway token so the UI connection isn't broken
         if existing_token and oc_json.exists():
             try:
                 cfg = json.loads(oc_json.read_text())
@@ -226,6 +480,25 @@ def rollback_to_backup(name: str, timestamp: str) -> dict:
                     json.dump(cfg, f, indent=2)
             except (json.JSONDecodeError, KeyError):
                 pass
+
+
+def rollback_to_backup(name: str, timestamp: str) -> dict:
+    """Auto-backup current state, then restore full agent state from backup."""
+    bot_dir = BOTS_DIR / name
+    if not bot_dir.exists():
+        raise FileNotFoundError(f"Bot directory not found: {name}")
+
+    path, kind = _find_backup(name, timestamp)
+    if path is None:
+        raise ValueError(f"Backup not found: {timestamp}")
+
+    # Safety: auto-backup current state before overwriting
+    create_backup(name, label="pre-rollback")
+
+    if kind == "tar":
+        _rollback_from_tar(path, bot_dir)
+    else:
+        _rollback_from_dir(path, bot_dir)
 
     meta = ensure_meta(name)
     meta["modified_at"] = _now_iso()
@@ -274,7 +547,7 @@ def generate_config(name: str, extra_config: dict | None = None) -> dict:
 
 
 def write_bot_files(name: str, config: dict, soul: str | None = None,
-                    forked_from: str | None = None) -> Path:
+                    forked_from: str | None = None, created_by: str | None = None) -> Path:
     """Create bots/{name}/, write config.json + SOUL.md + .meta.json. Returns bot dir."""
     bot_dir = BOTS_DIR / name
     bot_dir.mkdir(parents=True, exist_ok=True)
@@ -296,6 +569,7 @@ def write_bot_files(name: str, config: dict, soul: str | None = None,
         "created_at": now,
         "modified_at": now,
         "forked_from": forked_from,
+        "created_by": created_by,
         "backups": [],
     }
     write_meta(name, meta)
@@ -306,7 +580,7 @@ def write_bot_files(name: str, config: dict, soul: str | None = None,
 # ---------------------------------------------------------------------------
 # Container launcher (shared by create, duplicate, fork)
 # ---------------------------------------------------------------------------
-def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
+def _prepare_openclaw_home(bot_dir: Path, soul_text: str, trusted_proxies: list[str] | None = None) -> Path:
     """Create .openclaw/ config dir for a bot so it's usable from the start.
 
     If a workspace already exists (e.g. copied from a source bot during
@@ -376,7 +650,7 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
                 },
             },
             "controlUi": {"dangerouslyAllowHostHeaderOriginFallback": True},
-            "trustedProxies": ["172.16.0.0/12"],
+            "trustedProxies": trusted_proxies or ["127.0.0.1"],
         },
         **({"tools": {"web": {"search": {"provider": "brave", "apiKey": brave_api_key}}}}
            if brave_api_key else {}),
@@ -413,15 +687,25 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
     container_name = f"openclaw-bot-{name}"
     image = os.environ.get("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:latest")
 
-    # Read soul text for OpenClaw workspace injection
-    soul_path = bot_dir / "SOUL.md"
-    soul_text = soul_path.read_text() if soul_path.exists() else ""
-    oc_dir = _prepare_openclaw_home(bot_dir, soul_text)
-
     # In Docker Compose mode, Caddy owns the port range — don't map to host.
     # In dev mode (no HOST_BOTS_DIR), map ports for direct access.
     in_compose = bool(os.environ.get("HOST_BOTS_DIR"))
     port_bindings = {} if in_compose else {"18789/tcp": port}
+
+    # Connect Caddy to bot network BEFORE preparing openclaw config so we can
+    # look up Caddy's exact IP for trustedProxies (OpenClaw doesn't support CIDR).
+    trusted_proxies = None
+    if in_compose:
+        _connect_caddy_to_network(client, network_name)
+        caddy_ip = _get_caddy_ip_on_network(client, network_name)
+        trusted_proxies = ["127.0.0.1"]
+        if caddy_ip:
+            trusted_proxies.append(caddy_ip)
+
+    # Read soul text for OpenClaw workspace injection
+    soul_path = bot_dir / "SOUL.md"
+    soul_text = soul_path.read_text() if soul_path.exists() else ""
+    oc_dir = _prepare_openclaw_home(bot_dir, soul_text, trusted_proxies=trusted_proxies)
 
     container = client.containers.run(
         image,
@@ -446,10 +730,6 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
         restart_policy={"Name": "unless-stopped"},
     )
 
-    # Connect Caddy to bot network so it can reverse-proxy to the container
-    if in_compose:
-        _connect_caddy_to_network(client, network_name)
-
     _sync_caddy_config()
 
     return {
@@ -463,11 +743,12 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
 # ---------------------------------------------------------------------------
 # Bot lifecycle
 # ---------------------------------------------------------------------------
-def create_bot(name: str, soul: str | None = None, extra_config: dict | None = None) -> dict:
+def create_bot(name: str, soul: str | None = None, extra_config: dict | None = None,
+               created_by: str | None = None) -> dict:
     """Full orchestration: sanitize, gen config, write files, launch container."""
     name = sanitize_name(name)
     config = generate_config(name, extra_config)
-    bot_dir = write_bot_files(name, config, soul)
+    bot_dir = write_bot_files(name, config, soul, created_by=created_by)
     return _launch_container(name, bot_dir)
 
 
@@ -487,7 +768,7 @@ def _copy_workspace(src_dir: Path, dst_dir: Path) -> None:
     shutil.copytree(src_ws, dst_ws, dirs_exist_ok=True)
 
 
-def duplicate_bot(name: str, new_name: str) -> dict:
+def duplicate_bot(name: str, new_name: str, created_by: str | None = None) -> dict:
     """Copy a bot's full identity: config, soul, workspace, and memories."""
     name = sanitize_name(name)
     new_name = sanitize_name(new_name)
@@ -501,12 +782,12 @@ def duplicate_bot(name: str, new_name: str) -> dict:
     config = json.loads((src_dir / "config.json").read_text())
     soul = (src_dir / "SOUL.md").read_text() if (src_dir / "SOUL.md").exists() else ""
 
-    bot_dir = write_bot_files(new_name, config, soul, forked_from=None)
+    bot_dir = write_bot_files(new_name, config, soul, forked_from=None, created_by=created_by)
     _copy_workspace(src_dir, bot_dir)
     return _launch_container(new_name, bot_dir)
 
 
-def fork_bot(name: str, new_name: str) -> dict:
+def fork_bot(name: str, new_name: str, created_by: str | None = None) -> dict:
     """Fork a bot: copy full identity + memories, track lineage."""
     name = sanitize_name(name)
     new_name = sanitize_name(new_name)
@@ -520,7 +801,7 @@ def fork_bot(name: str, new_name: str) -> dict:
     config = json.loads((src_dir / "config.json").read_text())
     soul = (src_dir / "SOUL.md").read_text() if (src_dir / "SOUL.md").exists() else ""
 
-    bot_dir = write_bot_files(new_name, config, soul, forked_from=name)
+    bot_dir = write_bot_files(new_name, config, soul, forked_from=name, created_by=created_by)
     _copy_workspace(src_dir, bot_dir)
     result = _launch_container(new_name, bot_dir)
     result["forked_from"] = name
@@ -541,6 +822,7 @@ def list_bots() -> list[dict]:
             "port": int(c.labels.get("openclaw.port", 0)),
             "container_name": c.name,
             "forked_from": meta.get("forked_from"),
+            "created_by": meta.get("created_by"),
             "created_at": meta.get("created_at"),
             "backup_count": len(meta.get("backups", [])),
             "storage_bytes": get_bot_storage(name),
@@ -808,6 +1090,25 @@ def _connect_caddy_to_network(client, network_name: str) -> None:
         pass  # Caddy not running or already connected
 
 
+def _get_caddy_ip_on_network(client, network_name: str) -> str | None:
+    """Get Caddy container's IP address on a specific bot bridge network."""
+    try:
+        network = client.networks.get(network_name)
+        network.reload()
+        for container_id, info in network.attrs.get("Containers", {}).items():
+            # Match by name
+            try:
+                c = client.containers.get(container_id)
+                if c.name == CADDY_CONTAINER:
+                    ip = info.get("IPv4Address", "")
+                    return ip.split("/")[0] if ip else None
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def _disconnect_caddy_from_network(client, network_name: str) -> None:
     """Disconnect Caddy container from a bot's bridge network."""
     try:
@@ -831,6 +1132,7 @@ def _sync_caddy_config() -> None:
     - Main HTTPS server on :8443 for dashboard + frontend
     - Per-bot HTTPS server on each bot's allocated port (TLS termination)
     - HTTP server on :80 for HTTPS redirect
+    - forward_auth subrequests to /api/auth/verify for authentication
 
     Each bot gets its own Caddy server because OpenClaw's Control UI connects
     WebSocket to the root "/" of the origin, making path-based routing impossible.
@@ -846,8 +1148,89 @@ def _sync_caddy_config() -> None:
             all=False, filters={"label": "openclaw.bot=true"}
         )
 
+        # Rebuild port→bot cache
+        _PORT_TO_BOT.clear()
+        for c in containers:
+            cname = c.labels.get("openclaw.name", "")
+            cport = int(c.labels.get("openclaw.port", 0))
+            if cname and cport:
+                _PORT_TO_BOT[cport] = cname
+
         caddy_port = int(os.environ.get("CADDY_PORT", "8443"))
         tls_policy = [{"certificate_selection": {"any_tag": ["cert0"]}}]
+
+        # forward_auth handler: subrequest to dashboard's /api/auth/verify
+        login_url = (
+            f"{PORTAL_URL}:{caddy_port}/login"
+            if PORTAL_URL else
+            f"https://{{http.request.host}}:{caddy_port}/login"
+        )
+
+        def _forward_auth_handler(extra_headers=None, redirect_on_fail=False):
+            """Build a Caddy forward_auth (reverse_proxy) handler.
+
+            Uses copy_response_headers (Caddy's native forward_auth mechanism)
+            so that the auth subrequest doesn't consume the original connection.
+            This is critical for WebSocket upgrade requests on bot ports.
+            """
+            handle_response = [
+                {
+                    "match": {"status_code": [2]},
+                    "routes": [
+                        {
+                            "handle": [{
+                                "handler": "headers",
+                                "request": {
+                                    "set": {
+                                        "X-Forwarded-User": [
+                                            "{http.reverse_proxy.header.X-Forwarded-User}"
+                                        ],
+                                    },
+                                },
+                            }],
+                        },
+                    ],
+                },
+            ]
+            if redirect_on_fail:
+                handle_response.append({
+                    "match": {"status_code": [4]},
+                    "routes": [{
+                        "handle": [{
+                            "handler": "static_response",
+                            "headers": {"Location": [login_url]},
+                            "status_code": 302,
+                        }],
+                    }],
+                })
+            # Default: pass through auth server's error response
+            handle_response.append({
+                "routes": [{
+                    "handle": [{
+                        "handler": "copy_response",
+                    }],
+                }],
+            })
+            h = {
+                "handler": "reverse_proxy",
+                "upstreams": [{"dial": "dashboard:8080"}],
+                "rewrite": {"method": "GET", "uri": "/api/auth/verify"},
+                "headers": {"request": {
+                    "set": {},
+                    "delete": [
+                        "Connection",
+                        "Upgrade",
+                        "Sec-WebSocket-Version",
+                        "Sec-WebSocket-Key",
+                        "Sec-WebSocket-Extensions",
+                        "Sec-WebSocket-Protocol",
+                    ],
+                }},
+                "handle_response": handle_response,
+            }
+            if extra_headers:
+                h["headers"]["request"]["set"].update(extra_headers)
+            return h
 
         # Per-bot HTTPS servers — Caddy terminates TLS, forwards to container
         bot_servers = {}
@@ -857,26 +1240,101 @@ def _sync_caddy_config() -> None:
             if not name or not port:
                 continue
             container_name = f"openclaw-bot-{name}"
-            bot_servers[f"bot_{name}"] = {
-                "listen": [f":{port}"],
-                "routes": [{
+
+            if AUTH_DISABLED:
+                bot_routes = [{
                     "handle": [
                         {
                             "handler": "headers",
-                            "request": {
-                                "set": {
-                                    "X-Forwarded-User": ["admin"],
-                                },
-                            },
+                            "request": {"set": {"X-Forwarded-User": ["dev"]}},
                         },
                         {
                             "handler": "reverse_proxy",
                             "upstreams": [{"dial": f"{container_name}:18789"}],
                         },
                     ],
-                }],
+                }]
+            else:
+                bot_routes = [{
+                    "handle": [
+                        _forward_auth_handler(
+                            extra_headers={"X-Original-Port": [str(port)]},
+                            redirect_on_fail=True,
+                        ),
+                        {
+                            "handler": "reverse_proxy",
+                            "upstreams": [{"dial": f"{container_name}:18789"}],
+                        },
+                    ],
+                }]
+
+            bot_servers[f"bot_{name}"] = {
+                "listen": [f":{port}"],
+                "routes": bot_routes,
                 "tls_connection_policies": tls_policy,
             }
+
+        # Main HTTPS routes
+        if AUTH_DISABLED:
+            main_routes = [
+                {
+                    "match": [{"path": ["/api/*"]}],
+                    "handle": [{
+                        "handler": "reverse_proxy",
+                        "upstreams": [{"dial": "dashboard:8080"}],
+                    }],
+                },
+                {
+                    "handle": [{
+                        "handler": "reverse_proxy",
+                        "upstreams": [{"dial": "frontend:3000"}],
+                    }],
+                },
+            ]
+        else:
+            main_routes = [
+                # Public auth endpoints
+                {
+                    "match": [{"path": [
+                        "/api/auth/login", "/api/auth/verify", "/api/auth/logout",
+                    ]}],
+                    "handle": [{
+                        "handler": "reverse_proxy",
+                        "upstreams": [{"dial": "dashboard:8080"}],
+                    }],
+                },
+                # Protected API
+                {
+                    "match": [{"path": ["/api/*"]}],
+                    "handle": [
+                        _forward_auth_handler(),
+                        {
+                            "handler": "reverse_proxy",
+                            "upstreams": [{"dial": "dashboard:8080"}],
+                        },
+                    ],
+                },
+                # Public frontend routes (login, assets)
+                {
+                    "match": [{"path": [
+                        "/login", "/login/*", "/_next/*", "/favicon.ico",
+                    ]}],
+                    "handle": [{
+                        "handler": "reverse_proxy",
+                        "upstreams": [{"dial": "frontend:3000"}],
+                    }],
+                },
+                # Protected frontend (everything else) — redirect to login on 4xx
+                {
+                    "handle": [
+                        _forward_auth_handler(redirect_on_fail=True),
+                        {
+                            "handler": "reverse_proxy",
+                            "upstreams": [{"dial": "frontend:3000"}],
+                        },
+                    ],
+                },
+            ]
 
         config = {
             "admin": {"listen": ":2019"},
@@ -885,21 +1343,7 @@ def _sync_caddy_config() -> None:
                     "servers": {
                         "https": {
                             "listen": [f":{caddy_port}"],
-                            "routes": [
-                                {
-                                    "match": [{"path": ["/api/*"]}],
-                                    "handle": [{
-                                        "handler": "reverse_proxy",
-                                        "upstreams": [{"dial": "dashboard:8080"}],
-                                    }],
-                                },
-                                {
-                                    "handle": [{
-                                        "handler": "reverse_proxy",
-                                        "upstreams": [{"dial": "frontend:3000"}],
-                                    }],
-                                },
-                            ],
+                            "routes": main_routes,
                             "tls_connection_policies": tls_policy,
                         },
                         "http": {
@@ -944,10 +1388,77 @@ def _sync_caddy_config() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Backup retention
+# ---------------------------------------------------------------------------
+def prune_scheduled_backups(name: str, keep: int | None = None) -> int:
+    """Remove oldest scheduled backups beyond the retention limit. Returns count pruned."""
+    if keep is None:
+        keep = BACKUP_KEEP
+    meta = ensure_meta(name)
+    scheduled = [b for b in meta["backups"] if b.get("label") == "scheduled"]
+    if len(scheduled) <= keep:
+        return 0
+
+    to_remove = scheduled[: len(scheduled) - keep]
+    remove_timestamps = {b["timestamp"] for b in to_remove}
+    pruned = 0
+
+    for ts in remove_timestamps:
+        # Delete the tar.gz (or old dir) from disk
+        for base in [BACKUP_DIR / name if BACKUP_DIR else None, BOTS_DIR / name / ".backups"]:
+            if base is None:
+                continue
+            tar_path = base / f"{ts}.tar.gz"
+            if tar_path.exists():
+                tar_path.unlink()
+                pruned += 1
+            dir_path = base / ts
+            if dir_path.is_dir():
+                shutil.rmtree(dir_path)
+                pruned += 1
+
+    meta["backups"] = [b for b in meta["backups"] if b["timestamp"] not in remove_timestamps]
+    write_meta(name, meta)
+    return pruned
+
+
+# ---------------------------------------------------------------------------
+# Backup scheduler
+# ---------------------------------------------------------------------------
+_backup_stop_event = threading.Event()
+
+
+def _backup_scheduler():
+    """Run scheduled backups of all bots at a fixed interval."""
+    interval = BACKUP_INTERVAL_SECONDS
+    if interval <= 0:
+        return
+    while not _backup_stop_event.wait(interval):
+        try:
+            client = _get_client()
+            containers = client.containers.list(
+                all=True, filters={"label": "openclaw.bot=true"}
+            )
+            for c in containers:
+                bot_name = c.labels.get("openclaw.name", "")
+                if bot_name:
+                    try:
+                        create_backup(bot_name, label="scheduled")
+                        prune_scheduled_backups(bot_name)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Bootstrap admin user on first run
+    if not AUTH_DISABLED:
+        _bootstrap_admin()
     # Ensure Caddy is connected to all existing bot networks on startup
     if os.environ.get("HOST_BOTS_DIR"):
         try:
@@ -962,13 +1473,20 @@ async def _lifespan(app: FastAPI):
         except Exception:
             pass
     _sync_caddy_config()
+    # Start backup scheduler thread
+    if BACKUP_INTERVAL_SECONDS > 0:
+        _backup_stop_event.clear()
+        t = threading.Thread(target=_backup_scheduler, daemon=True, name="backup-scheduler")
+        t.start()
     yield
+    _backup_stop_event.set()
 
 
 app = FastAPI(title="ClawFleetManager", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -992,6 +1510,223 @@ class RollbackRequest(BaseModel):
     timestamp: str
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+    bots: list[str] = []
+
+
+class UpdateUserRequest(BaseModel):
+    password: str | None = None
+    role: str | None = None
+    bots: list[str] | None = None
+
+
+# --- Auth ---
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    # Secure=True only when behind Caddy (compose mode) — TestClient uses HTTP
+    secure = bool(os.environ.get("HOST_BOTS_DIR"))
+    response.set_cookie(
+        "cfm_session", token,
+        httponly=True, secure=secure, samesite="lax",
+        path="/", max_age=SESSION_TTL,
+    )
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(req: LoginRequest, response: Response):
+    if AUTH_DISABLED:
+        return {"ok": True, "username": "dev", "role": "admin"}
+    users = _load_users()
+    user = users.get(req.username)
+    if not user or not _verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = _create_session(req.username)
+    _set_session_cookie(response, token)
+    return {"ok": True, "username": req.username, "role": user["role"]}
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(response: Response, cfm_session: str | None = Cookie(None)):
+    if cfm_session:
+        SESSIONS.pop(cfm_session, None)
+    response.delete_cookie("cfm_session", path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/verify")
+async def api_auth_verify(request: Request, response: Response,
+                          cfm_session: str | None = Cookie(None)):
+    """Caddy forward_auth endpoint. Returns 200 + X-Forwarded-User header or 401."""
+    if AUTH_DISABLED:
+        return Response(status_code=200, headers={"X-Forwarded-User": "dev"})
+
+    session = _get_session(cfm_session) if cfm_session else None
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Per-bot RBAC: check if user can access this bot (via X-Original-Port)
+    original_port = request.headers.get("X-Original-Port")
+    if original_port:
+        try:
+            port = int(original_port)
+            bot_name = _bot_name_from_port(port)
+            if bot_name and not _user_can_access_bot(session, bot_name):
+                raise HTTPException(status_code=403, detail="Access denied to this bot")
+        except ValueError:
+            pass
+
+    return Response(status_code=200, headers={"X-Forwarded-User": session["username"]})
+
+
+@app.get("/api/auth/me")
+async def api_auth_me(cfm_session: str | None = Cookie(None)):
+    """Return current user info for the frontend."""
+    if AUTH_DISABLED:
+        return {"username": "dev", "role": "admin", "bots": ["*"]}
+    session = _get_session(cfm_session) if cfm_session else None
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {
+        "username": session["username"],
+        "role": session["role"],
+        "bots": session["bots"],
+    }
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/api/auth/change-password")
+async def api_auth_change_password(req: ChangePasswordRequest,
+                                    session: dict = Depends(_require_session)):
+    """Allow any user to change their own password."""
+    users = _load_users()
+    user = users.get(session["username"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not _verify_password(req.current_password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if not req.new_password.strip():
+        raise HTTPException(status_code=400, detail="New password cannot be empty")
+    user["password_hash"] = _hash_password(req.new_password)
+    _save_users(users)
+    _invalidate_user_sessions(session["username"])
+    return {"ok": True}
+
+
+@app.get("/api/auth/users")
+async def api_auth_list_users(cfm_session: str | None = Cookie(None)):
+    """List all users (admin only). Password hashes are excluded."""
+    if AUTH_DISABLED:
+        return []
+    session = _get_session(cfm_session) if cfm_session else None
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if session["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    users = _load_users()
+    return [
+        {"username": name, "role": u["role"], "bots": u.get("bots", [])}
+        for name, u in users.items()
+    ]
+
+
+@app.post("/api/auth/users")
+async def api_auth_create_user(req: CreateUserRequest,
+                               cfm_session: str | None = Cookie(None)):
+    """Create a new user (admin only)."""
+    if AUTH_DISABLED:
+        raise HTTPException(status_code=400, detail="Auth is disabled")
+    session = _get_session(cfm_session) if cfm_session else None
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if session["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    users = _load_users()
+    if req.username in users:
+        raise HTTPException(status_code=409, detail="User already exists")
+    if not req.username.strip():
+        raise HTTPException(status_code=400, detail="Username cannot be empty")
+    if not req.password.strip():
+        raise HTTPException(status_code=400, detail="Password cannot be empty")
+    users[req.username] = {
+        "password_hash": _hash_password(req.password),
+        "role": req.role,
+        "bots": req.bots,
+    }
+    _save_users(users)
+    return {"username": req.username, "role": req.role, "bots": req.bots}
+
+
+@app.put("/api/auth/users/{username}")
+async def api_auth_update_user(username: str, req: UpdateUserRequest,
+                               cfm_session: str | None = Cookie(None)):
+    """Update a user (admin only). Invalidates their sessions on change."""
+    if AUTH_DISABLED:
+        raise HTTPException(status_code=400, detail="Auth is disabled")
+    session = _get_session(cfm_session) if cfm_session else None
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if session["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    users = _load_users()
+    if username not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Prevent demoting the last admin
+    if req.role and req.role != "admin" and users[username]["role"] == "admin":
+        admin_count = sum(1 for u in users.values() if u["role"] == "admin")
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot demote the last admin")
+
+    user = users[username]
+    if req.password is not None and req.password.strip():
+        user["password_hash"] = _hash_password(req.password)
+    if req.role is not None:
+        user["role"] = req.role
+    if req.bots is not None:
+        user["bots"] = req.bots
+    _save_users(users)
+    _invalidate_user_sessions(username)
+    return {"username": username, "role": user["role"], "bots": user.get("bots", [])}
+
+
+@app.delete("/api/auth/users/{username}")
+async def api_auth_delete_user(username: str,
+                               cfm_session: str | None = Cookie(None)):
+    """Delete a user (admin only). Can't delete self or last admin."""
+    if AUTH_DISABLED:
+        raise HTTPException(status_code=400, detail="Auth is disabled")
+    session = _get_session(cfm_session) if cfm_session else None
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if session["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    users = _load_users()
+    if username not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+    if username == session["username"]:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    if users[username]["role"] == "admin":
+        admin_count = sum(1 for u in users.values() if u["role"] == "admin")
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the last admin")
+    _invalidate_user_sessions(username)
+    del users[username]
+    _save_users(users)
+    return {"deleted": username}
+
+
 # --- Config ---
 
 @app.get("/api/config")
@@ -1006,7 +1741,7 @@ async def api_config():
 # --- Fleet stats ---
 
 @app.get("/api/fleet/stats")
-async def api_fleet_stats():
+async def api_fleet_stats(session: dict = Depends(_require_session)):
     try:
         return get_fleet_stats()
     except Exception as e:
@@ -1016,14 +1751,21 @@ async def api_fleet_stats():
 # --- Bot CRUD ---
 
 @app.get("/api/bots")
-async def api_list_bots():
-    return list_bots()
+async def api_list_bots(session: dict = Depends(_require_session)):
+    bots = list_bots()
+    if session["role"] != "admin" and "*" not in session.get("bots", []):
+        allowed = set(session.get("bots", []))
+        bots = [b for b in bots if b["name"] in allowed]
+    return bots
 
 
 @app.post("/api/bots")
-async def api_create_bot(req: CreateBotRequest):
+async def api_create_bot(req: CreateBotRequest, session: dict = Depends(_require_session)):
     try:
-        return create_bot(req.name, req.soul, req.extra_config)
+        result = create_bot(req.name, req.soul, req.extra_config,
+                            created_by=session["username"])
+        _grant_bot_to_user(session["username"], result["name"])
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except (RuntimeError, PermissionError) as e:
@@ -1033,8 +1775,8 @@ async def api_create_bot(req: CreateBotRequest):
 
 
 @app.post("/api/bots/{name}/start")
-async def api_start_bot(name: str):
-    name = sanitize_name(name)
+async def api_start_bot(name: str, ctx: dict = Depends(_require_bot_access)):
+    name = ctx["_bot_name"]
     client = _get_client()
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
@@ -1046,8 +1788,8 @@ async def api_start_bot(name: str):
 
 
 @app.post("/api/bots/{name}/stop")
-async def api_stop_bot(name: str):
-    name = sanitize_name(name)
+async def api_stop_bot(name: str, ctx: dict = Depends(_require_bot_access)):
+    name = ctx["_bot_name"]
     client = _get_client()
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
@@ -1059,8 +1801,8 @@ async def api_stop_bot(name: str):
 
 
 @app.post("/api/bots/{name}/restart")
-async def api_restart_bot(name: str):
-    name = sanitize_name(name)
+async def api_restart_bot(name: str, ctx: dict = Depends(_require_bot_access)):
+    name = ctx["_bot_name"]
     client = _get_client()
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
@@ -1071,16 +1813,16 @@ async def api_restart_bot(name: str):
 
 
 @app.delete("/api/bots/{name}")
-async def api_delete_bot(name: str):
+async def api_delete_bot(name: str, ctx: dict = Depends(_require_bot_access)):
     try:
-        return delete_bot(name)
+        return delete_bot(ctx["_bot_name"])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/bots/{name}/logs")
-async def api_bot_logs(name: str):
-    name = sanitize_name(name)
+async def api_bot_logs(name: str, ctx: dict = Depends(_require_bot_access)):
+    name = ctx["_bot_name"]
     client = _get_client()
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
@@ -1093,9 +1835,13 @@ async def api_bot_logs(name: str):
 # --- Duplicate & Fork ---
 
 @app.post("/api/bots/{name}/duplicate")
-async def api_duplicate_bot(name: str, req: DuplicateRequest):
+async def api_duplicate_bot(name: str, req: DuplicateRequest,
+                            ctx: dict = Depends(_require_bot_access)):
     try:
-        return duplicate_bot(name, req.new_name)
+        result = duplicate_bot(ctx["_bot_name"], req.new_name,
+                               created_by=ctx["username"])
+        _grant_bot_to_user(ctx["username"], result["name"])
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
@@ -1109,9 +1855,13 @@ async def api_duplicate_bot(name: str, req: DuplicateRequest):
 
 
 @app.post("/api/bots/{name}/fork")
-async def api_fork_bot(name: str, req: ForkRequest):
+async def api_fork_bot(name: str, req: ForkRequest,
+                       ctx: dict = Depends(_require_bot_access)):
     try:
-        return fork_bot(name, req.new_name)
+        result = fork_bot(ctx["_bot_name"], req.new_name,
+                          created_by=ctx["username"])
+        _grant_bot_to_user(ctx["username"], result["name"])
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
@@ -1127,8 +1877,8 @@ async def api_fork_bot(name: str, req: ForkRequest):
 # --- Backup & Rollback ---
 
 @app.post("/api/bots/{name}/backup")
-async def api_create_backup(name: str):
-    name = sanitize_name(name)
+async def api_create_backup(name: str, ctx: dict = Depends(_require_bot_access)):
+    name = ctx["_bot_name"]
     try:
         return create_backup(name)
     except FileNotFoundError as e:
@@ -1136,8 +1886,8 @@ async def api_create_backup(name: str):
 
 
 @app.get("/api/bots/{name}/backups")
-async def api_list_backups(name: str):
-    name = sanitize_name(name)
+async def api_list_backups(name: str, ctx: dict = Depends(_require_bot_access)):
+    name = ctx["_bot_name"]
     bot_dir = BOTS_DIR / name
     if not bot_dir.exists():
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
@@ -1145,11 +1895,11 @@ async def api_list_backups(name: str):
 
 
 @app.post("/api/bots/{name}/rollback")
-async def api_rollback_bot(name: str, req: RollbackRequest):
-    name = sanitize_name(name)
+async def api_rollback_bot(name: str, req: RollbackRequest,
+                           ctx: dict = Depends(_require_bot_access)):
+    name = ctx["_bot_name"]
     try:
         result = rollback_to_backup(name, req.timestamp)
-        # Restart the container so it picks up the restored config
         client = _get_client()
         try:
             container = client.containers.get(f"openclaw-bot-{name}")
@@ -1167,8 +1917,8 @@ async def api_rollback_bot(name: str, req: RollbackRequest):
 # --- Metadata & Stats ---
 
 @app.get("/api/bots/{name}/meta")
-async def api_bot_meta(name: str):
-    name = sanitize_name(name)
+async def api_bot_meta(name: str, ctx: dict = Depends(_require_bot_access)):
+    name = ctx["_bot_name"]
     bot_dir = BOTS_DIR / name
     if not bot_dir.exists():
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
@@ -1176,9 +1926,9 @@ async def api_bot_meta(name: str):
 
 
 @app.get("/api/bots/{name}/stats")
-async def api_bot_stats(name: str):
+async def api_bot_stats(name: str, ctx: dict = Depends(_require_bot_access)):
     try:
-        return get_bot_stats(name)
+        return get_bot_stats(ctx["_bot_name"])
     except docker.errors.NotFound:
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
     except ValueError as e:
@@ -1186,9 +1936,9 @@ async def api_bot_stats(name: str):
 
 
 @app.get("/api/bots/{name}/detail")
-async def api_bot_detail(name: str):
+async def api_bot_detail(name: str, ctx: dict = Depends(_require_bot_access)):
     try:
-        return get_bot_detail(name)
+        return get_bot_detail(ctx["_bot_name"])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1196,9 +1946,9 @@ async def api_bot_detail(name: str):
 # --- Device pairing helpers ---
 
 @app.post("/api/bots/{name}/approve-devices")
-async def api_approve_devices(name: str):
+async def api_approve_devices(name: str, ctx: dict = Depends(_require_bot_access)):
     """Approve all pending device pairing requests for a bot."""
-    name = sanitize_name(name)
+    name = ctx["_bot_name"]
     client = _get_client()
     container_name = f"openclaw-bot-{name}"
     try:
