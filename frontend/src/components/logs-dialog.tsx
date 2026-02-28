@@ -44,8 +44,8 @@ export function LogsDialog({ botName }: { botName: string }) {
             {loading ? "Loading..." : "Refresh"}
           </Button>
         </div>
-        <div className="flex-1 overflow-auto rounded bg-background p-3 border border-border">
-          <pre className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
+        <div className="flex-1 overflow-auto rounded-sm bg-secondary p-3 border border-border">
+          <pre className="text-xs whitespace-pre-wrap break-words text-muted-foreground font-mono">
             {logs}
           </pre>
         </div>

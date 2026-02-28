@@ -13,6 +13,7 @@ services:
       - BOTS_DIR=/data/bots
       - HOST_BOTS_DIR=${PWD}/bots
       - TEMPLATE_DIR=/data/bot-template
+      - CADDY_ADMIN_URL=http://caddy:2019
     env_file:
       - .env
     restart: unless-stopped
@@ -23,11 +24,31 @@ services:
       network: host
       args:
         - API_URL=http://dashboard:8080
-    ports:
-      - "${DASHBOARD_PORT:-3000}:3000"
+    expose:
+      - "3000"
     environment:
       - API_URL=http://dashboard:8080
       - HOSTNAME=0.0.0.0
     depends_on:
       - dashboard
     restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8-alpine
+    ports:
+      - "${CADDY_PORT:-8443}:8443"
+      - "80:80"
+      - "${BOT_PORT_START:-3001}-${BOT_PORT_END:-3100}:${BOT_PORT_START:-3001}-${BOT_PORT_END:-3100}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - dashboard
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

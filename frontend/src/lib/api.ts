@@ -14,7 +14,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface PortalConfig {
+  portal_url: string | null;
+  caddy_port: number;
+}
+
 export const api = {
+  getConfig: () => request<PortalConfig>("/config"),
   listBots: () => request<Bot[]>("/bots"),
   createBot: (data: CreateBotRequest) =>
     request<Bot>("/bots", { method: "POST", body: JSON.stringify(data) }),

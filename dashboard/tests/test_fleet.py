@@ -14,6 +14,8 @@ from app import (
     ensure_meta,
     fork_bot,
     generate_config,
+    get_bot_cron_jobs,
+    get_bot_storage,
     list_backups,
     read_meta,
     rollback_to_backup,
@@ -652,3 +654,61 @@ class TestWorkspaceCopy:
         result = duplicate_bot("original", "copy")
         assert result["name"] == "copy"
         assert (bots_dir / "copy" / "SOUL.md").read_text() == "plain soul"
+
+
+# ===========================================================================
+# Storage & Cron
+# ===========================================================================
+class TestBotStorage:
+    def test_storage_returns_byte_count(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot")
+        size = get_bot_storage("mybot")
+        assert isinstance(size, int)
+        assert size > 0
+
+    def test_storage_returns_zero_for_missing_bot(self, bot_env):
+        assert get_bot_storage("nonexistent") == 0
+
+    def test_storage_counts_nested_files(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "nested")
+        sub = bots_dir / "nested" / "subdir"
+        sub.mkdir()
+        (sub / "data.bin").write_bytes(b"x" * 1024)
+        size = get_bot_storage("nested")
+        assert size >= 1024
+
+
+class TestBotCronJobs:
+    def test_returns_jobs_from_file(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "cronbot")
+        cron_dir = bots_dir / "cronbot" / ".openclaw" / "cron"
+        cron_dir.mkdir(parents=True)
+        (cron_dir / "jobs.json").write_text(json.dumps({
+            "version": 1,
+            "jobs": [
+                {"id": "j1", "name": "daily check", "schedule": "0 9 * * *", "enabled": True}
+            ]
+        }))
+        jobs = get_bot_cron_jobs("cronbot")
+        assert len(jobs) == 1
+        assert jobs[0]["id"] == "j1"
+        assert jobs[0]["schedule"] == "0 9 * * *"
+
+    def test_returns_empty_list_when_no_cron_file(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "nocron")
+        assert get_bot_cron_jobs("nocron") == []
+
+    def test_returns_empty_list_for_missing_bot(self, bot_env):
+        assert get_bot_cron_jobs("ghost") == []
+
+    def test_returns_empty_list_for_malformed_json(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "badcron")
+        cron_dir = bots_dir / "badcron" / ".openclaw" / "cron"
+        cron_dir.mkdir(parents=True)
+        (cron_dir / "jobs.json").write_text("not json")
+        assert get_bot_cron_jobs("badcron") == []

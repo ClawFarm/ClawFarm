@@ -10,7 +10,7 @@ botfarm/
 │   ├── app.py              # All backend logic: bot lifecycle, backup, metrics, API routes
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── tests/test_fleet.py # 52 unit tests (pytest)
+│   └── tests/test_fleet.py # 59 unit tests (pytest)
 ├── frontend/               # Next.js 16 dashboard UI (React 19, Tailwind 4, shadcn/ui)
 │   ├── src/app/            # Pages: / (dashboard), /bots/[name] (detail)
 │   ├── src/components/     # UI components (bot-card, bot-actions, logs-dialog, etc.)
@@ -23,7 +23,10 @@ botfarm/
 │   └── SOUL.md
 ├── bots/                   # Runtime: each bot gets a subdirectory (gitignored)
 ├── network/setup-isolation.sh  # iptables rules for bot network isolation
-├── docker-compose.yml      # Production deployment (frontend + backend)
+├── docker-compose.yml      # Production: dashboard + frontend + Caddy
+├── Caddyfile               # Initial Caddy config (overwritten by admin API)
+├── certs/                  # Self-signed TLS cert (gitignored)
+├── screenshots/            # UI screenshots (gitignored)
 ├── .env                    # Local config (gitignored)
 └── .env.example            # Template for .env
 ```
@@ -47,9 +50,12 @@ cd frontend && npm install && npm run dev
 
 ## Docker Compose Deployment
 
+All three services (dashboard, frontend, Caddy) run in Docker. Access via HTTPS through Caddy.
+
 ```bash
 docker compose up --build -d
-# Frontend on :${DASHBOARD_PORT:-3000}, Backend on :8080
+# Access at https://<server-ip>:8443
+# HTTP :80 redirects to HTTPS :8443
 ```
 
 ## Running Tests
@@ -118,6 +124,27 @@ Without this, bot containers get volume mounts pointing to `/data/bots/...` whic
 
 The dashboard container runs as root and creates files owned by root. OpenClaw containers run as `node` (UID 1000). The `_fix_openclaw_perms()` function in `app.py` chowns the `.openclaw/` directory to UID 1000 after creating or restoring files. This runs after bot creation, duplicate, fork, and rollback.
 
+### Caddy HTTPS Reverse Proxy
+
+Single entry point for all services via Caddy on port 8443 (HTTPS). This is required because OpenClaw Control UI uses `crypto.subtle` which only works in a Secure Context (HTTPS or localhost).
+
+**Route structure:**
+- `/` and `/*` → Next.js frontend (`frontend:3000`)
+- `/api/*` → FastAPI dashboard (`dashboard:8080`)
+- `/bot/{name}/*` → Bot Control UI via `host.docker.internal:{port}`
+
+**Dynamic route sync:** `_sync_caddy_config()` in `app.py` pushes the full route config to Caddy's admin API (`POST http://caddy:2019/load`) on every bot lifecycle event (create, delete, start, stop) and on dashboard startup. Uses full-state reconciliation — always rebuilds the entire config from current Docker container state.
+
+**TLS:** Self-signed cert at `certs/cert.pem` + `certs/key.pem`. Generate with:
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout certs/key.pem -out certs/cert.pem -days 3650 \
+  -subj "/CN=ClawFleetManager" \
+  -addext "subjectAltName=IP:<server-ip>,IP:127.0.0.1,DNS:localhost"
+```
+
+**Bot containers** are on isolated bridge networks so Caddy can't reach them by container name. Caddy targets `host.docker.internal:{port}` instead (the host-exposed ports). The `extra_hosts` directive in docker-compose.yml maps this to the host gateway.
+
 ### Duplicate vs Fork
 - **Duplicate**: Copies config, soul, and workspace. No lineage tracked.
 - **Fork**: Same as duplicate but records `forked_from` in metadata.
@@ -148,6 +175,9 @@ The dashboard container runs as root and creates files owned by root. OpenClaw c
 | `BOT_PORT_END` | No | End of port range (default: 3100) |
 | `HOST_BOTS_DIR` | Docker Compose | **Host-side** path to `bots/` dir — required when dashboard runs in a container (see workaround above) |
 | `DASHBOARD_PORT` | No | Frontend port (default: 3000) |
+| `CADDY_PORT` | No | Caddy HTTPS port (default: 8443) |
+| `CADDY_ADMIN_URL` | Docker Compose | Caddy admin API URL (default: `http://caddy:2019`) |
+| `PORTAL_URL` | Recommended | External base URL (e.g., `https://10.88.142.100` or `https://fleet.example.com`) — used for HTTP redirects and bot UI links |
 | `OPENCLAW_IMAGE` | No | Bot container image (default: `ghcr.io/openclaw/openclaw:latest`) |
 
 ## Common Tasks

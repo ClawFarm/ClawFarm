@@ -54,7 +54,7 @@ export function BackupHistory({ botName, backups, onAction }: Props) {
           {[...backups].reverse().map((b) => (
             <div
               key={b.timestamp}
-              className="flex items-center justify-between rounded bg-background px-3 py-2 text-xs border border-border"
+              className="flex items-center justify-between rounded-sm bg-secondary px-3 py-1.5 text-xs border border-border"
             >
               <div>
                 <span className="font-medium">{b.timestamp}</span>

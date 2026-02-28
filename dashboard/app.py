@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -426,12 +427,17 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
     soul_text = soul_path.read_text() if soul_path.exists() else ""
     oc_dir = _prepare_openclaw_home(bot_dir, soul_text)
 
+    # In Docker Compose mode, Caddy owns the port range — don't map to host.
+    # In dev mode (no HOST_BOTS_DIR), map ports for direct access.
+    in_compose = bool(os.environ.get("HOST_BOTS_DIR"))
+    port_bindings = {} if in_compose else {"18789/tcp": port}
+
     container = client.containers.run(
         image,
         name=container_name,
         detach=True,
         command=["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan"],
-        ports={"18789/tcp": port},
+        ports=port_bindings,
         volumes={
             _host_path(bot_dir): {"bind": "/data", "mode": "rw"},
             _host_path(oc_dir): {"bind": "/home/node/.openclaw", "mode": "rw"},
@@ -444,6 +450,12 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
         network=network_name,
         restart_policy={"Name": "unless-stopped"},
     )
+
+    # Connect Caddy to bot network so it can reverse-proxy to the container
+    if in_compose:
+        _connect_caddy_to_network(client, network_name)
+
+    _sync_caddy_config()
 
     return {
         "name": name,
@@ -536,6 +548,8 @@ def list_bots() -> list[dict]:
             "forked_from": meta.get("forked_from"),
             "created_at": meta.get("created_at"),
             "backup_count": len(meta.get("backups", [])),
+            "storage_bytes": get_bot_storage(name),
+            "cron_jobs": get_bot_cron_jobs(name),
         })
     return bots
 
@@ -554,6 +568,8 @@ def delete_bot(name: str) -> dict:
     except docker.errors.NotFound:
         pass
 
+    _disconnect_caddy_from_network(client, network_name)
+
     try:
         network = client.networks.get(network_name)
         network.remove()
@@ -564,7 +580,32 @@ def delete_bot(name: str) -> dict:
     if bot_dir.exists():
         shutil.rmtree(bot_dir)
 
+    _sync_caddy_config()
+
     return {"deleted": name}
+
+
+# ---------------------------------------------------------------------------
+# Bot storage & cron
+# ---------------------------------------------------------------------------
+def get_bot_storage(name: str) -> int:
+    """Return total disk usage in bytes for a bot directory."""
+    bot_dir = BOTS_DIR / name
+    if not bot_dir.exists():
+        return 0
+    return sum(f.stat().st_size for f in bot_dir.rglob("*") if f.is_file())
+
+
+def get_bot_cron_jobs(name: str) -> list[dict]:
+    """Read cron jobs from the bot's .openclaw/cron/jobs.json."""
+    cron_path = BOTS_DIR / name / ".openclaw" / "cron" / "jobs.json"
+    if not cron_path.exists():
+        return []
+    try:
+        data = json.loads(cron_path.read_text())
+        return data.get("jobs", [])
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -675,13 +716,174 @@ def get_bot_detail(name: str) -> dict:
         "meta": meta,
         "stats": stats,
         "gateway_token": gateway_token,
+        "storage_bytes": get_bot_storage(name),
+        "cron_jobs": get_bot_cron_jobs(name),
     }
+
+
+# ---------------------------------------------------------------------------
+# Caddy network helpers
+# ---------------------------------------------------------------------------
+CADDY_CONTAINER = os.environ.get("CADDY_CONTAINER", "botfarm-caddy-1")
+
+
+def _connect_caddy_to_network(client, network_name: str) -> None:
+    """Connect Caddy container to a bot's bridge network."""
+    try:
+        network = client.networks.get(network_name)
+        network.connect(CADDY_CONTAINER)
+    except Exception:
+        pass  # Caddy not running or already connected
+
+
+def _disconnect_caddy_from_network(client, network_name: str) -> None:
+    """Disconnect Caddy container from a bot's bridge network."""
+    try:
+        network = client.networks.get(network_name)
+        network.disconnect(CADDY_CONTAINER)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Caddy reverse proxy sync
+# ---------------------------------------------------------------------------
+CADDY_ADMIN_URL = os.environ.get("CADDY_ADMIN_URL", "http://caddy:2019")
+PORTAL_URL = os.environ.get("PORTAL_URL", "")  # e.g. "https://10.88.142.100"
+
+
+def _sync_caddy_config() -> None:
+    """Push updated route config to Caddy's admin API.
+
+    Builds a JSON config with:
+    - Main HTTPS server on :8443 for dashboard + frontend
+    - Per-bot HTTPS server on each bot's allocated port (TLS termination)
+    - HTTP server on :80 for HTTPS redirect
+
+    Each bot gets its own Caddy server because OpenClaw's Control UI connects
+    WebSocket to the root "/" of the origin, making path-based routing impossible.
+    Per-port routing gives each bot its own origin.
+
+    Fails silently when Caddy is not reachable (dev mode).
+    """
+    try:
+        import requests as _req
+
+        client = _get_client()
+        containers = client.containers.list(
+            all=False, filters={"label": "openclaw.bot=true"}
+        )
+
+        caddy_port = int(os.environ.get("CADDY_PORT", "8443"))
+        tls_policy = [{"certificate_selection": {"any_tag": ["cert0"]}}]
+
+        # Per-bot HTTPS servers — Caddy terminates TLS, forwards to container
+        bot_servers = {}
+        for c in containers:
+            name = c.labels.get("openclaw.name", "")
+            port = int(c.labels.get("openclaw.port", 0))
+            if not name or not port:
+                continue
+            container_name = f"openclaw-bot-{name}"
+            bot_servers[f"bot_{name}"] = {
+                "listen": [f":{port}"],
+                "routes": [{
+                    "handle": [{
+                        "handler": "reverse_proxy",
+                        "upstreams": [{"dial": f"{container_name}:18789"}],
+                    }],
+                }],
+                "tls_connection_policies": tls_policy,
+            }
+
+        config = {
+            "admin": {"listen": ":2019"},
+            "apps": {
+                "http": {
+                    "servers": {
+                        "https": {
+                            "listen": [f":{caddy_port}"],
+                            "routes": [
+                                {
+                                    "match": [{"path": ["/api/*"]}],
+                                    "handle": [{
+                                        "handler": "reverse_proxy",
+                                        "upstreams": [{"dial": "dashboard:8080"}],
+                                    }],
+                                },
+                                {
+                                    "handle": [{
+                                        "handler": "reverse_proxy",
+                                        "upstreams": [{"dial": "frontend:3000"}],
+                                    }],
+                                },
+                            ],
+                            "tls_connection_policies": tls_policy,
+                        },
+                        "http": {
+                            "listen": [":80"],
+                            "routes": [{
+                                "handle": [{
+                                    "handler": "static_response",
+                                    "headers": {
+                                        "Location": [
+                                            f"{PORTAL_URL}:{caddy_port}{{http.request.uri}}"
+                                            if PORTAL_URL else
+                                            f"https://{{http.request.host}}:{caddy_port}{{http.request.uri}}"
+                                        ]
+                                    },
+                                    "status_code": 302,
+                                }],
+                            }],
+                        },
+                        **bot_servers,
+                    },
+                },
+                "tls": {
+                    "certificates": {
+                        "load_files": [{
+                            "certificate": "/certs/cert.pem",
+                            "key": "/certs/key.pem",
+                            "tags": ["cert0"],
+                        }]
+                    }
+                },
+            },
+        }
+
+        _req.post(
+            f"{CADDY_ADMIN_URL}/load",
+            json=config,
+            headers={"Content-Type": "application/json"},
+            timeout=5,
+        )
+    except Exception:
+        pass  # Caddy not running (dev mode) — silently ignore
 
 
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="ClawFleetManager")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Ensure Caddy is connected to all existing bot networks on startup
+    if os.environ.get("HOST_BOTS_DIR"):
+        try:
+            client = _get_client()
+            containers = client.containers.list(
+                all=True, filters={"label": "openclaw.bot=true"}
+            )
+            for c in containers:
+                name = c.labels.get("openclaw.name", "")
+                if name:
+                    _connect_caddy_to_network(client, f"openclaw-net-{name}")
+        except Exception:
+            pass
+    _sync_caddy_config()
+    yield
+
+
+app = FastAPI(title="ClawFleetManager", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -706,6 +908,17 @@ class ForkRequest(BaseModel):
 
 class RollbackRequest(BaseModel):
     timestamp: str
+
+
+# --- Config ---
+
+@app.get("/api/config")
+async def api_config():
+    """Return public configuration for the frontend."""
+    return {
+        "portal_url": PORTAL_URL or None,
+        "caddy_port": int(os.environ.get("CADDY_PORT", "8443")),
+    }
 
 
 # --- Bot CRUD ---
@@ -734,6 +947,7 @@ async def api_start_bot(name: str):
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
         container.start()
+        _sync_caddy_config()
         return {"name": name, "status": "running"}
     except docker.errors.NotFound:
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
@@ -746,6 +960,7 @@ async def api_stop_bot(name: str):
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
         container.stop()
+        _sync_caddy_config()
         return {"name": name, "status": "stopped"}
     except docker.errors.NotFound:
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")

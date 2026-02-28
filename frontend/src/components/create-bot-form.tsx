@@ -32,7 +32,7 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <div className="border-b border-border px-6 py-4">
+    <div className="border-b border-border px-4 py-3">
       <button
         onClick={() => setOpen(!open)}
         className="text-sm font-medium text-muted-foreground hover:text-foreground mb-2"

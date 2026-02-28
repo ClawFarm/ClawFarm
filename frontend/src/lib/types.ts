@@ -1,3 +1,11 @@
+export interface CronJob {
+  id: string;
+  name: string;
+  schedule: string;
+  enabled: boolean;
+  [key: string]: unknown;
+}
+
 export interface Bot {
   name: string;
   status: "running" | "exited" | "created" | string;
@@ -6,6 +14,8 @@ export interface Bot {
   forked_from: string | null;
   created_at: string | null;
   backup_count: number;
+  storage_bytes: number;
+  cron_jobs: CronJob[];
 }
 
 export interface Backup {
@@ -43,6 +53,8 @@ export interface BotDetail {
   meta: BotMeta;
   stats: BotStats | null;
   gateway_token: string;
+  storage_bytes: number;
+  cron_jobs: CronJob[];
 }
 
 export interface CreateBotRequest {

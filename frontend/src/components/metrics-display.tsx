@@ -5,9 +5,9 @@ import type { BotStats } from "@/lib/types";
 
 function ProgressBar({ percent, color }: { percent: number; color: string }) {
   return (
-    <div className="h-2 w-full rounded bg-background">
+    <div className="h-1.5 w-full rounded-full bg-secondary">
       <div
-        className={`h-full rounded ${color}`}
+        className={`h-full rounded-full ${color}`}
         style={{ width: `${Math.min(percent, 100)}%` }}
       />
     </div>
@@ -36,7 +36,7 @@ export function MetricsDisplay({ stats }: { stats: BotStats | null }) {
             <span className="text-muted-foreground">CPU</span>
             <span>{stats.cpu_percent}%</span>
           </div>
-          <ProgressBar percent={stats.cpu_percent} color="bg-primary" />
+          <ProgressBar percent={stats.cpu_percent} color="bg-foreground/60" />
         </div>
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs">
@@ -45,7 +45,7 @@ export function MetricsDisplay({ stats }: { stats: BotStats | null }) {
           </div>
           <ProgressBar
             percent={stats.memory_percent}
-            color={stats.memory_percent > 80 ? "bg-destructive" : "bg-primary"}
+            color={stats.memory_percent > 80 ? "bg-destructive" : "bg-foreground/60"}
           />
         </div>
       </div>

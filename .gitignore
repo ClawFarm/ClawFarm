@@ -13,7 +13,7 @@ wheels/
 .env
 
 # Bot runtime data
-bots/
+/bots/
 
 # Logs
 *.log
@@ -27,8 +27,12 @@ bots/
 # Playwright MCP logs
 .playwright-mcp/
 
-# E2E screenshots
+# Screenshots
+screenshots/
 e2e-dashboard.png
+
+# TLS certs
+certs/
 
 # Frontend
 frontend/node_modules/

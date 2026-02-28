@@ -26,10 +26,18 @@ iptables -A DOCKER-USER -d "$LLM_HOST" -p tcp --dport "$LLM_PORT" -j ACCEPT
 
 # 3. Accept incoming connections to container services (LAN access)
 #    After DNAT, destination ports are the container-internal ports:
-#    - 8080: dashboard
-#    - 3000: bot gateway (OpenClaw UI)
+#    - 8443:       Caddy HTTPS reverse proxy (dashboard/frontend)
+#    - 80:         Caddy HTTP→HTTPS redirect
+#    - 8080:       dashboard API
+#    - 3000:       frontend
+#    - 3001-3100:  Caddy HTTPS for bot Control UIs
+BOT_PORT_START="${BOT_PORT_START:-3001}"
+BOT_PORT_END="${BOT_PORT_END:-3100}"
+iptables -A DOCKER-USER -p tcp --dport 8443 -j ACCEPT
+iptables -A DOCKER-USER -p tcp --dport 80 -j ACCEPT
 iptables -A DOCKER-USER -p tcp --dport 8080 -j ACCEPT
 iptables -A DOCKER-USER -p tcp --dport 3000 -j ACCEPT
+iptables -A DOCKER-USER -p tcp --dport "$BOT_PORT_START":"$BOT_PORT_END" -j ACCEPT
 
 # 5. Drop all RFC1918 (private network) destinations — blocks bot-to-LAN and bot-to-bot
 iptables -A DOCKER-USER -d 10.0.0.0/8 -j DROP

@@ -1,0 +1,21 @@
+# Initial Caddyfile — overwritten dynamically by the dashboard via Caddy admin API.
+# This static config is used on first startup before any bots are created.
+{
+	admin :2019
+}
+
+:8443 {
+	tls /certs/cert.pem /certs/key.pem
+
+	handle /api/* {
+		reverse_proxy dashboard:8080
+	}
+
+	handle /* {
+		reverse_proxy frontend:3000
+	}
+}
+
+:80 {
+	redir https://{host}:8443{uri}
+}
