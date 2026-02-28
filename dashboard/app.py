@@ -227,9 +227,7 @@ def rollback_to_backup(name: str, timestamp: str) -> dict:
                 pass
 
         # Fix permissions for container access
-        for p in dst_oc.rglob("*"):
-            p.chmod(0o777 if p.is_dir() else 0o666)
-        dst_oc.chmod(0o777)
+        _fix_openclaw_perms(dst_oc)
 
     meta = ensure_meta(name)
     meta["modified_at"] = _now_iso()
@@ -378,12 +376,39 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
     with open(oc_dir / "openclaw.json", "w") as f:
         json.dump(oc_config, f, indent=2)
 
-    # Make everything writable by the container's node user
+    # Make everything owned and writable by the container's node user (UID 1000)
+    _fix_openclaw_perms(oc_dir)
+
+    return oc_dir
+
+
+def _fix_openclaw_perms(oc_dir: Path) -> None:
+    """Set ownership to UID 1000 (node) and open permissions on .openclaw/."""
     for p in oc_dir.rglob("*"):
         p.chmod(0o777 if p.is_dir() else 0o666)
     oc_dir.chmod(0o777)
+    try:
+        import subprocess
+        subprocess.run(["chown", "-R", "1000:1000", str(oc_dir)],
+                       check=False, capture_output=True)
+    except Exception:
+        pass  # chown may not be available outside Docker
 
-    return oc_dir
+
+def _host_path(container_path: Path) -> str:
+    """Convert a container-internal path to the corresponding host path.
+
+    When running inside Docker, BOTS_DIR is e.g. /data/bots but the host
+    path is different (e.g. /home/user/botfarm/bots).  HOST_BOTS_DIR tells
+    us the host-side mount point so volume mounts for bot containers resolve
+    correctly from the Docker daemon's perspective.
+    """
+    host_bots = os.environ.get("HOST_BOTS_DIR", "")
+    if not host_bots:
+        return str(container_path.resolve())
+    # Replace the BOTS_DIR prefix with the host path
+    rel = container_path.resolve().relative_to(BOTS_DIR.resolve())
+    return str(Path(host_bots) / rel)
 
 
 def _launch_container(name: str, bot_dir: Path) -> dict:
@@ -408,8 +433,8 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
         command=["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan"],
         ports={"18789/tcp": port},
         volumes={
-            str(bot_dir.resolve()): {"bind": "/data", "mode": "rw"},
-            str(oc_dir.resolve()): {"bind": "/home/node/.openclaw", "mode": "rw"},
+            _host_path(bot_dir): {"bind": "/data", "mode": "rw"},
+            _host_path(oc_dir): {"bind": "/home/node/.openclaw", "mode": "rw"},
         },
         labels={
             "openclaw.bot": "true",

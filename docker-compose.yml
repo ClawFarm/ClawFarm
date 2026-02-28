@@ -1,6 +1,8 @@
 services:
   dashboard:
-    build: ./dashboard
+    build:
+      context: ./dashboard
+      network: host
     expose:
       - "8080"
     volumes:
@@ -9,17 +11,23 @@ services:
       - ./bot-template:/data/bot-template
     environment:
       - BOTS_DIR=/data/bots
+      - HOST_BOTS_DIR=${PWD}/bots
       - TEMPLATE_DIR=/data/bot-template
     env_file:
       - .env
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      network: host
+      args:
+        - API_URL=http://dashboard:8080
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
     environment:
       - API_URL=http://dashboard:8080
+      - HOSTNAME=0.0.0.0
     depends_on:
       - dashboard
     restart: unless-stopped

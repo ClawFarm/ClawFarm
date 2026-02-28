@@ -1,0 +1,163 @@
+# ClawFleetManager
+
+Docker-based fleet manager for OpenClaw bots. Single-page dashboard to create, duplicate, fork, backup/rollback, and monitor bot containers.
+
+## Project Structure
+
+```
+botfarm/
+├── dashboard/              # FastAPI backend (Python 3.12)
+│   ├── app.py              # All backend logic: bot lifecycle, backup, metrics, API routes
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── tests/test_fleet.py # 52 unit tests (pytest)
+├── frontend/               # Next.js 16 dashboard UI (React 19, Tailwind 4, shadcn/ui)
+│   ├── src/app/            # Pages: / (dashboard), /bots/[name] (detail)
+│   ├── src/components/     # UI components (bot-card, bot-actions, logs-dialog, etc.)
+│   ├── src/hooks/          # SWR data fetching hooks (use-bots, use-bot-detail)
+│   ├── src/lib/            # api.ts (API client), types.ts, format.ts
+│   ├── next.config.ts      # Proxies /api/* to backend via rewrites
+│   └── Dockerfile
+├── bot-template/           # Template files for new bots
+│   ├── config.template.json
+│   └── SOUL.md
+├── bots/                   # Runtime: each bot gets a subdirectory (gitignored)
+├── network/setup-isolation.sh  # iptables rules for bot network isolation
+├── docker-compose.yml      # Production deployment (frontend + backend)
+├── .env                    # Local config (gitignored)
+└── .env.example            # Template for .env
+```
+
+## Development Setup
+
+```bash
+# 1. Environment
+cp .env.example .env   # Edit with your LLM endpoint details
+
+# 2. Backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r dashboard/requirements.txt
+cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
+
+# 3. Frontend (separate terminal)
+cd frontend && npm install && npm run dev
+
+# 4. Open http://localhost:3000
+```
+
+## Docker Compose Deployment
+
+```bash
+docker compose up --build -d
+# Frontend on :${DASHBOARD_PORT:-3000}, Backend on :8080
+```
+
+## Running Tests
+
+```bash
+source .venv/bin/activate
+cd dashboard && python -m pytest tests/test_fleet.py -v
+```
+
+All tests are filesystem-based with monkeypatched paths — no Docker needed.
+
+## Key Architecture Decisions
+
+### OpenClaw API Mode
+Bots use `openai-completions` API mode (NOT `openai-responses`). This maps to `/v1/chat/completions` which is vLLM's core API with full tool calling support. The `openai-responses` mode uses `/v1/responses` and does NOT send tool definitions to local models.
+
+### Bot Container Setup
+Each bot gets:
+- Its own Docker bridge network (isolation)
+- Port allocated from `BOT_PORT_START`–`BOT_PORT_END` range
+- `.openclaw/` directory mounted as `/home/node/.openclaw` with:
+  - `openclaw.json` — model provider config, gateway settings
+  - `workspace/SOUL.md` — personality
+  - `workspace/MEMORY.md` — agent memory (pre-created empty)
+  - `workspace/memory/` — date-based memory files
+- Container command: `node openclaw.mjs gateway --allow-unconfigured --bind lan`
+- Restart policy: `unless-stopped`
+
+### Gateway Auth & Device Pairing
+OpenClaw generates a gateway auth token on first start (stored in `openclaw.json → gateway.auth.token`). The Control UI needs this token to connect. Remote browsers also require device pairing approval. The dashboard surfaces the token on the bot detail page and provides an "Approve Devices" button. Clicking "Open UI" auto-fires device approval.
+
+### Backup/Rollback
+Backups capture the full agent state: `config.json`, `SOUL.md`, and the entire `.openclaw/` directory (workspace, sessions, cron — excluding logs and temp files). Rollback restores everything but preserves the current gateway auth token so active UI connections aren't broken. A pre-rollback auto-backup is always created first.
+
+### Docker-in-Docker Volume Mount Paths (HOST_BOTS_DIR Workaround)
+
+**This is a critical gotcha for docker-compose deployments.**
+
+The dashboard container creates bot containers via the Docker socket (`/var/run/docker.sock`). When it calls `docker.containers.run()` with volume mounts, the paths must be **host** paths — because the Docker daemon runs on the host, not inside the dashboard container.
+
+The problem: inside the dashboard container, `bot_dir.resolve()` returns `/data/bots/captain-jack` (the container-internal mount point). But the Docker daemon needs the host path, e.g., `/home/storm/projects/botfarm/bots/captain-jack`.
+
+The solution: `HOST_BOTS_DIR` env var is set in `docker-compose.yml` to `${PWD}/bots`. The `_host_path()` function in `app.py` converts container-internal paths to host paths:
+
+```python
+def _host_path(container_path: Path) -> str:
+    host_bots = os.environ.get("HOST_BOTS_DIR", "")
+    if not host_bots:
+        return str(container_path.resolve())  # dev mode: paths are already host paths
+    rel = container_path.resolve().relative_to(BOTS_DIR.resolve())
+    return str(Path(host_bots) / rel)
+```
+
+In `docker-compose.yml`:
+```yaml
+environment:
+  - BOTS_DIR=/data/bots
+  - HOST_BOTS_DIR=${PWD}/bots
+```
+
+Without this, bot containers get volume mounts pointing to `/data/bots/...` which doesn't exist on the host, causing silent mount failures or permission errors.
+
+**When running outside Docker** (dev mode), `HOST_BOTS_DIR` is unset and `_host_path()` falls back to `resolve()` which returns the correct host path directly.
+
+### File Permissions for Bot Containers
+
+The dashboard container runs as root and creates files owned by root. OpenClaw containers run as `node` (UID 1000). The `_fix_openclaw_perms()` function in `app.py` chowns the `.openclaw/` directory to UID 1000 after creating or restoring files. This runs after bot creation, duplicate, fork, and rollback.
+
+### Duplicate vs Fork
+- **Duplicate**: Copies config, soul, and workspace. No lineage tracked.
+- **Fork**: Same as duplicate but records `forked_from` in metadata.
+- Both copy the source bot's workspace (memories, identity files) but NOT sessions or gateway auth — each bot gets fresh conversation history and its own auth token.
+
+## Important Files
+
+| File | Purpose |
+|------|---------|
+| `dashboard/app.py` | **All backend logic** — bot CRUD, backup, rollback, metrics, Docker orchestration, API routes |
+| `frontend/src/lib/api.ts` | Frontend API client — all backend calls |
+| `frontend/src/lib/types.ts` | TypeScript interfaces (Bot, BotDetail, BotStats, Backup, etc.) |
+| `frontend/src/app/page.tsx` | Dashboard home page |
+| `frontend/src/app/bots/[name]/page.tsx` | Bot detail page |
+| `frontend/next.config.ts` | API proxy rewrite rules |
+| `bot-template/config.template.json` | Base config for new bots |
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `LLM_BASE_URL` | Yes | vLLM endpoint (e.g., `http://10.88.100.186:8000/v1`) |
+| `LLM_MODEL` | Yes | Model name (e.g., `Qwen3.5-122B-A10B`) |
+| `LLM_API_KEY` | Yes | API key for the LLM server |
+| `LLM_HOST` | For isolation | LLM server IP (used by iptables rules) |
+| `LLM_PORT` | For isolation | LLM server port (used by iptables rules) |
+| `BOT_PORT_START` | No | Start of port range (default: 3001) |
+| `BOT_PORT_END` | No | End of port range (default: 3100) |
+| `HOST_BOTS_DIR` | Docker Compose | **Host-side** path to `bots/` dir — required when dashboard runs in a container (see workaround above) |
+| `DASHBOARD_PORT` | No | Frontend port (default: 3000) |
+| `OPENCLAW_IMAGE` | No | Bot container image (default: `ghcr.io/openclaw/openclaw:latest`) |
+
+## Common Tasks
+
+### Adding a new API endpoint
+1. Add the function in `dashboard/app.py` (pure logic section)
+2. Add the FastAPI route in the routes section at the bottom
+3. Add the client method in `frontend/src/lib/api.ts`
+4. Add TypeScript types if needed in `frontend/src/lib/types.ts`
+5. Add tests in `dashboard/tests/test_fleet.py`
+
+### Adding a new UI component
+Frontend uses shadcn/ui components in `frontend/src/components/ui/`. Custom components go in `frontend/src/components/`. Data fetching uses SWR hooks in `frontend/src/hooks/`.

@@ -24,6 +24,12 @@ bots/
 *.swp
 *.swo
 
+# Playwright MCP logs
+.playwright-mcp/
+
+# E2E screenshots
+e2e-dashboard.png
+
 # Frontend
 frontend/node_modules/
 frontend/.next/
