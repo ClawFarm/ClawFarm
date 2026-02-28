@@ -126,7 +126,7 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
               </Button>
               {detail.port > 0 && (
                 <a
-                  href={botUiUrl(detail.port, config?.portal_url)}
+                  href={botUiUrl(detail.port, config?.portal_url, detail.gateway_token)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => { api.approveDevices(detail!.name).catch(() => {}); }}

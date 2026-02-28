@@ -372,6 +372,7 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
         },
         "gateway": {
             "controlUi": {"dangerouslyAllowHostHeaderOriginFallback": True},
+            "trustedProxies": ["172.16.0.0/12"],
         },
     }
     with open(oc_dir / "openclaw.json", "w") as f:
@@ -550,6 +551,7 @@ def list_bots() -> list[dict]:
             "backup_count": len(meta.get("backups", [])),
             "storage_bytes": get_bot_storage(name),
             "cron_jobs": get_bot_cron_jobs(name),
+            "gateway_token": get_gateway_token(name),
         })
     return bots
 
@@ -606,6 +608,18 @@ def get_bot_cron_jobs(name: str) -> list[dict]:
         return data.get("jobs", [])
     except (json.JSONDecodeError, OSError):
         return []
+
+
+def get_gateway_token(name: str) -> str:
+    """Read the gateway auth token from the bot's openclaw.json."""
+    oc_path = BOTS_DIR / name / ".openclaw" / "openclaw.json"
+    if not oc_path.exists():
+        return ""
+    try:
+        cfg = json.loads(oc_path.read_text())
+        return cfg.get("gateway", {}).get("auth", {}).get("token", "")
+    except (json.JSONDecodeError, OSError):
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -677,15 +691,7 @@ def get_bot_detail(name: str) -> dict:
     if (bot_dir / "SOUL.md").exists():
         soul = (bot_dir / "SOUL.md").read_text()
 
-    # Read gateway token from openclaw.json so the UI can display it
-    gateway_token = ""
-    oc_config_path = bot_dir / ".openclaw" / "openclaw.json"
-    if oc_config_path.exists():
-        try:
-            oc_cfg = json.loads(oc_config_path.read_text())
-            gateway_token = oc_cfg.get("gateway", {}).get("auth", {}).get("token", "")
-        except (json.JSONDecodeError, KeyError):
-            pass
+    gateway_token = get_gateway_token(name)
 
     meta = ensure_meta(name)
 

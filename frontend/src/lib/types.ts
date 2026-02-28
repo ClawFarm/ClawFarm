@@ -16,6 +16,7 @@ export interface Bot {
   backup_count: number;
   storage_bytes: number;
   cron_jobs: CronJob[];
+  gateway_token: string;
 }
 
 export interface Backup {

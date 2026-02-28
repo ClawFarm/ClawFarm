@@ -28,7 +28,7 @@ export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
         <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
           <span>:{bot.port}</span>
           <a
-            href={botUiUrl(bot.port, config?.portal_url)}
+            href={botUiUrl(bot.port, config?.portal_url, bot.gateway_token)}
             target="_blank"
             rel="noopener noreferrer"
             className="text-foreground hover:opacity-70 transition-opacity"

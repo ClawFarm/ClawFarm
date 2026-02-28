@@ -21,13 +21,18 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-export function botUiUrl(port: number, portalUrl?: string | null): string {
-  if (typeof window === "undefined") return `http://localhost:${port}`;
-  if (portalUrl) return `${portalUrl}:${port}/`;
-  if (window.location.protocol === "https:") {
-    return `https://${window.location.hostname}:${port}/`;
+export function botUiUrl(port: number, portalUrl?: string | null, token?: string): string {
+  let base: string;
+  if (typeof window === "undefined") {
+    base = `http://localhost:${port}`;
+  } else if (portalUrl) {
+    base = `${portalUrl}:${port}/`;
+  } else if (window.location.protocol === "https:") {
+    base = `https://${window.location.hostname}:${port}/`;
+  } else {
+    base = `http://${window.location.hostname}:${port}`;
   }
-  return `http://${window.location.hostname}:${port}`;
+  return token ? `${base}#token=${token}` : base;
 }
 
 export function statusColor(status: string): string {
