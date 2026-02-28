@@ -115,8 +115,26 @@ def ensure_meta(name: str) -> dict:
 # ---------------------------------------------------------------------------
 # Backup & rollback
 # ---------------------------------------------------------------------------
+def _copy_openclaw_state(src_oc: Path, dst_oc: Path, *, exclude_logs: bool = False) -> None:
+    """Copy .openclaw/ contents, optionally skipping logs and temp files."""
+    if not src_oc.exists():
+        return
+    for item in src_oc.iterdir():
+        name = item.name
+        # Always skip: device tokens, temp backups, update checks
+        if name in ("openclaw.json.bak", "update-check.json"):
+            continue
+        if exclude_logs and name == "logs":
+            continue
+        dst = dst_oc / name
+        if item.is_dir():
+            shutil.copytree(item, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dst)
+
+
 def create_backup(name: str, label: str = "manual") -> dict:
-    """Copy current config.json + SOUL.md to .backups/{timestamp}/."""
+    """Snapshot full agent state: config.json, SOUL.md, and .openclaw/ directory."""
     bot_dir = BOTS_DIR / name
     if not bot_dir.exists():
         raise FileNotFoundError(f"Bot directory not found: {name}")
@@ -125,12 +143,20 @@ def create_backup(name: str, label: str = "manual") -> dict:
     backup_dir = bot_dir / ".backups" / ts
     backup_dir.mkdir(parents=True, exist_ok=True)
 
+    # Copy root-level bot files
     config_src = bot_dir / "config.json"
     soul_src = bot_dir / "SOUL.md"
     if config_src.exists():
         shutil.copy2(config_src, backup_dir / "config.json")
     if soul_src.exists():
         shutil.copy2(soul_src, backup_dir / "SOUL.md")
+
+    # Copy full .openclaw/ state (workspace, agents, cron, config)
+    src_oc = bot_dir / ".openclaw"
+    if src_oc.exists():
+        dst_oc = backup_dir / ".openclaw"
+        dst_oc.mkdir(exist_ok=True)
+        _copy_openclaw_state(src_oc, dst_oc, exclude_logs=True)
 
     now = _now_iso()
     meta = ensure_meta(name)
@@ -148,7 +174,7 @@ def list_backups(name: str) -> list[dict]:
 
 
 def rollback_to_backup(name: str, timestamp: str) -> dict:
-    """Auto-backup current state, then restore from backup."""
+    """Auto-backup current state, then restore full agent state from backup."""
     bot_dir = BOTS_DIR / name
     if not bot_dir.exists():
         raise FileNotFoundError(f"Bot directory not found: {name}")
@@ -160,13 +186,50 @@ def rollback_to_backup(name: str, timestamp: str) -> dict:
     # Safety: auto-backup current state before overwriting
     create_backup(name, label="pre-rollback")
 
-    # Restore files
+    # Restore root-level files
     backup_config = backup_dir / "config.json"
     backup_soul = backup_dir / "SOUL.md"
     if backup_config.exists():
         shutil.copy2(backup_config, bot_dir / "config.json")
     if backup_soul.exists():
         shutil.copy2(backup_soul, bot_dir / "SOUL.md")
+
+    # Restore .openclaw/ state if present in backup
+    backup_oc = backup_dir / ".openclaw"
+    if backup_oc.exists():
+        dst_oc = bot_dir / ".openclaw"
+        # Preserve gateway auth token so the bot stays accessible
+        existing_token = ""
+        oc_json = dst_oc / "openclaw.json"
+        if oc_json.exists():
+            try:
+                cfg = json.loads(oc_json.read_text())
+                existing_token = cfg.get("gateway", {}).get("auth", {}).get("token", "")
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Clear workspace and agents, then restore from backup
+        for subdir in ("workspace", "agents", "cron"):
+            target = dst_oc / subdir
+            if target.exists():
+                shutil.rmtree(target)
+
+        _copy_openclaw_state(backup_oc, dst_oc)
+
+        # Re-inject the current gateway token so the UI connection isn't broken
+        if existing_token and oc_json.exists():
+            try:
+                cfg = json.loads(oc_json.read_text())
+                cfg.setdefault("gateway", {}).setdefault("auth", {})["token"] = existing_token
+                with open(oc_json, "w") as f:
+                    json.dump(cfg, f, indent=2)
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Fix permissions for container access
+        for p in dst_oc.rglob("*"):
+            p.chmod(0o777 if p.is_dir() else 0o666)
+        dst_oc.chmod(0o777)
 
     meta = ensure_meta(name)
     meta["modified_at"] = _now_iso()
@@ -248,13 +311,20 @@ def write_bot_files(name: str, config: dict, soul: str | None = None,
 # Container launcher (shared by create, duplicate, fork)
 # ---------------------------------------------------------------------------
 def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
-    """Create .openclaw/ config dir for a bot so it's usable from the start."""
+    """Create .openclaw/ config dir for a bot so it's usable from the start.
+
+    If a workspace already exists (e.g. copied from a source bot during
+    duplicate/fork), its files are preserved — only SOUL.md is written
+    if it doesn't already exist in the workspace.
+    """
     oc_dir = bot_dir / ".openclaw"
     oc_dir.mkdir(exist_ok=True)
     (oc_dir / "workspace").mkdir(exist_ok=True)
 
-    # Write SOUL.md into workspace so OpenClaw picks up personality
-    (oc_dir / "workspace" / "SOUL.md").write_text(soul_text)
+    # Only write SOUL.md if not already present (duplicate/fork may have copied it)
+    ws_soul = oc_dir / "workspace" / "SOUL.md"
+    if not ws_soul.exists():
+        ws_soul.write_text(soul_text)
 
     # Gateway config: register local model provider, set as default
     llm_model = os.environ.get("LLM_MODEL", "Qwen3.5-122B-A10B")
@@ -363,8 +433,24 @@ def create_bot(name: str, soul: str | None = None, extra_config: dict | None = N
     return _launch_container(name, bot_dir)
 
 
+def _copy_workspace(src_dir: Path, dst_dir: Path) -> None:
+    """Copy the source bot's .openclaw/workspace/ to the destination.
+
+    This preserves personality (SOUL.md), identity (IDENTITY.md, USER.md),
+    memories (MEMORY.md, memory/), and any other workspace files the agent
+    has created. Sessions and gateway auth are NOT copied — each bot gets
+    a fresh conversation history and its own auth token.
+    """
+    src_ws = src_dir / ".openclaw" / "workspace"
+    if not src_ws.exists():
+        return
+    dst_ws = dst_dir / ".openclaw" / "workspace"
+    dst_ws.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src_ws, dst_ws, dirs_exist_ok=True)
+
+
 def duplicate_bot(name: str, new_name: str) -> dict:
-    """Copy a bot's actual config + soul to a new bot."""
+    """Copy a bot's full identity: config, soul, workspace, and memories."""
     name = sanitize_name(name)
     new_name = sanitize_name(new_name)
 
@@ -378,11 +464,12 @@ def duplicate_bot(name: str, new_name: str) -> dict:
     soul = (src_dir / "SOUL.md").read_text() if (src_dir / "SOUL.md").exists() else ""
 
     bot_dir = write_bot_files(new_name, config, soul, forked_from=None)
+    _copy_workspace(src_dir, bot_dir)
     return _launch_container(new_name, bot_dir)
 
 
 def fork_bot(name: str, new_name: str) -> dict:
-    """Fork a bot: copy config + soul, track lineage."""
+    """Fork a bot: copy full identity + memories, track lineage."""
     name = sanitize_name(name)
     new_name = sanitize_name(new_name)
 
@@ -396,6 +483,7 @@ def fork_bot(name: str, new_name: str) -> dict:
     soul = (src_dir / "SOUL.md").read_text() if (src_dir / "SOUL.md").exists() else ""
 
     bot_dir = write_bot_files(new_name, config, soul, forked_from=name)
+    _copy_workspace(src_dir, bot_dir)
     result = _launch_container(new_name, bot_dir)
     result["forked_from"] = name
     return result

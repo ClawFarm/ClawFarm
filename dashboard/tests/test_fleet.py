@@ -460,3 +460,195 @@ class TestFork:
 
         child_meta = read_meta("child")
         assert child_meta["forked_from"] == "parent"  # Not grandparent
+
+
+# ===========================================================================
+# Full-state backup: .openclaw/ directory (tests 41–44)
+# ===========================================================================
+class TestOpenClawStateBackup:
+    def _setup_bot_with_openclaw(self, bots_dir, name):
+        """Create a bot with a populated .openclaw/ directory."""
+        bot_dir = _create_test_bot(bots_dir, name)
+        write_meta(name, {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+        oc_dir = bot_dir / ".openclaw"
+        oc_dir.mkdir()
+        (oc_dir / "workspace").mkdir()
+        (oc_dir / "workspace" / "SOUL.md").write_text("pirate soul")
+        (oc_dir / "workspace" / "MEMORY.md").write_text("remembers the kraken")
+        mem_dir = oc_dir / "workspace" / "memory"
+        mem_dir.mkdir()
+        (mem_dir / "facts.md").write_text("fact 1")
+        (oc_dir / "openclaw.json").write_text(json.dumps({"gateway": {"auth": {"token": "abc123"}}}))
+        agents_dir = oc_dir / "agents" / "main" / "sessions"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "sess1.json").write_text('{"id":"s1"}')
+        return bot_dir
+
+    def test_backup_includes_openclaw_workspace(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        self._setup_bot_with_openclaw(bots_dir, "stateful")
+        result = create_backup("stateful")
+        ts = result["timestamp"]
+        backup_oc = bots_dir / "stateful" / ".backups" / ts / ".openclaw"
+        assert (backup_oc / "workspace" / "SOUL.md").read_text() == "pirate soul"
+        assert (backup_oc / "workspace" / "MEMORY.md").read_text() == "remembers the kraken"
+        assert (backup_oc / "workspace" / "memory" / "facts.md").read_text() == "fact 1"
+
+    def test_backup_includes_openclaw_sessions(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        self._setup_bot_with_openclaw(bots_dir, "stateful")
+        result = create_backup("stateful")
+        ts = result["timestamp"]
+        backup_oc = bots_dir / "stateful" / ".backups" / ts / ".openclaw"
+        assert (backup_oc / "agents" / "main" / "sessions" / "sess1.json").exists()
+
+    def test_backup_excludes_temp_files(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        bot_dir = self._setup_bot_with_openclaw(bots_dir, "stateful")
+        # Add files that should be excluded
+        (bot_dir / ".openclaw" / "openclaw.json.bak").write_text("backup")
+        (bot_dir / ".openclaw" / "update-check.json").write_text("{}")
+        result = create_backup("stateful")
+        ts = result["timestamp"]
+        backup_oc = bots_dir / "stateful" / ".backups" / ts / ".openclaw"
+        assert not (backup_oc / "openclaw.json.bak").exists()
+        assert not (backup_oc / "update-check.json").exists()
+
+    def test_backup_excludes_logs(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        bot_dir = self._setup_bot_with_openclaw(bots_dir, "stateful")
+        logs_dir = bot_dir / ".openclaw" / "logs"
+        logs_dir.mkdir()
+        (logs_dir / "output.log").write_text("big log file")
+        result = create_backup("stateful")
+        ts = result["timestamp"]
+        backup_oc = bots_dir / "stateful" / ".backups" / ts / ".openclaw"
+        assert not (backup_oc / "logs").exists()
+
+
+# ===========================================================================
+# Full-state rollback: .openclaw/ restoration (tests 45–47)
+# ===========================================================================
+class TestOpenClawStateRollback:
+    def _setup_bot_with_openclaw(self, bots_dir, name, soul="original soul", memory="original memory"):
+        bot_dir = _create_test_bot(bots_dir, name, soul=soul)
+        write_meta(name, {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+        oc_dir = bot_dir / ".openclaw"
+        oc_dir.mkdir()
+        (oc_dir / "workspace").mkdir()
+        (oc_dir / "workspace" / "SOUL.md").write_text(soul)
+        (oc_dir / "workspace" / "MEMORY.md").write_text(memory)
+        (oc_dir / "openclaw.json").write_text(json.dumps({
+            "gateway": {"auth": {"token": "tok-original"}},
+            "models": {"mode": "merge"},
+        }))
+        return bot_dir
+
+    def test_rollback_restores_workspace(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        self._setup_bot_with_openclaw(bots_dir, "mybot", soul="v1 soul", memory="v1 memory")
+        result = create_backup("mybot")
+        ts = result["timestamp"]
+
+        # Modify the workspace
+        ws = bots_dir / "mybot" / ".openclaw" / "workspace"
+        (ws / "SOUL.md").write_text("v2 soul")
+        (ws / "MEMORY.md").write_text("v2 memory")
+
+        time.sleep(1.1)
+        rollback_to_backup("mybot", ts)
+
+        assert (ws / "SOUL.md").read_text() == "v1 soul"
+        assert (ws / "MEMORY.md").read_text() == "v1 memory"
+
+    def test_rollback_preserves_gateway_token(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        self._setup_bot_with_openclaw(bots_dir, "mybot")
+        result = create_backup("mybot")
+        ts = result["timestamp"]
+
+        # Change the gateway token (simulating a new token generated after backup)
+        oc_json = bots_dir / "mybot" / ".openclaw" / "openclaw.json"
+        cfg = json.loads(oc_json.read_text())
+        cfg["gateway"]["auth"]["token"] = "tok-new"
+        oc_json.write_text(json.dumps(cfg))
+
+        time.sleep(1.1)
+        rollback_to_backup("mybot", ts)
+
+        restored = json.loads(oc_json.read_text())
+        assert restored["gateway"]["auth"]["token"] == "tok-new"  # Preserved, NOT reverted
+
+    def test_rollback_without_openclaw_still_works(self, bot_env):
+        """Rollback should work even if the backup has no .openclaw/ dir."""
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot", config={"version": "v1"}, soul="old soul")
+        write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        result = create_backup("mybot")
+        ts = result["timestamp"]
+
+        (bots_dir / "mybot" / "config.json").write_text(json.dumps({"version": "v2"}))
+
+        time.sleep(1.1)
+        rollback_to_backup("mybot", ts)
+
+        restored = json.loads((bots_dir / "mybot" / "config.json").read_text())
+        assert restored["version"] == "v1"
+
+
+# ===========================================================================
+# Workspace copy for duplicate/fork (tests 48–50)
+# ===========================================================================
+class TestWorkspaceCopy:
+    def _mock_launch(self, monkeypatch):
+        def fake_launch(name, bot_dir):
+            return {"name": name, "status": "created", "port": 3001, "container_name": f"openclaw-bot-{name}"}
+        monkeypatch.setattr("app._launch_container", fake_launch)
+
+    def test_duplicate_copies_workspace(self, bot_env, monkeypatch):
+        self._mock_launch(monkeypatch)
+        bots_dir = bot_env["bots_dir"]
+        src = _create_test_bot(bots_dir, "original", soul="pirate soul")
+        write_meta("original", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+        ws = src / ".openclaw" / "workspace"
+        ws.mkdir(parents=True)
+        (ws / "SOUL.md").write_text("pirate soul")
+        (ws / "MEMORY.md").write_text("knows treasure locations")
+
+        duplicate_bot("original", "copy")
+
+        dst_ws = bots_dir / "copy" / ".openclaw" / "workspace"
+        assert (dst_ws / "SOUL.md").read_text() == "pirate soul"
+        assert (dst_ws / "MEMORY.md").read_text() == "knows treasure locations"
+
+    def test_fork_copies_workspace(self, bot_env, monkeypatch):
+        self._mock_launch(monkeypatch)
+        bots_dir = bot_env["bots_dir"]
+        src = _create_test_bot(bots_dir, "parent", soul="parent soul")
+        write_meta("parent", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+        ws = src / ".openclaw" / "workspace"
+        ws.mkdir(parents=True)
+        (ws / "SOUL.md").write_text("parent soul")
+        (ws / "IDENTITY.md").write_text("I am the parent")
+        mem = ws / "memory"
+        mem.mkdir()
+        (mem / "history.md").write_text("past events")
+
+        fork_bot("parent", "child")
+
+        dst_ws = bots_dir / "child" / ".openclaw" / "workspace"
+        assert (dst_ws / "SOUL.md").read_text() == "parent soul"
+        assert (dst_ws / "IDENTITY.md").read_text() == "I am the parent"
+        assert (dst_ws / "memory" / "history.md").read_text() == "past events"
+
+    def test_duplicate_without_workspace_still_works(self, bot_env, monkeypatch):
+        """Duplicate works even when source has no .openclaw/workspace/."""
+        self._mock_launch(monkeypatch)
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "original", soul="plain soul")
+        write_meta("original", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
+
+        result = duplicate_bot("original", "copy")
+        assert result["name"] == "copy"
+        assert (bots_dir / "copy" / "SOUL.md").read_text() == "plain soul"
