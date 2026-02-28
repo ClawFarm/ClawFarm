@@ -673,6 +673,78 @@ def get_bot_stats(name: str) -> dict:
     }
 
 
+def get_fleet_stats() -> dict:
+    """Aggregate stats across all bot containers."""
+    client = _get_client()
+    containers = client.containers.list(all=True, filters={"label": "openclaw.bot=true"})
+
+    total_bots = len(containers)
+    running_bots = 0
+    total_cpu = 0.0
+    total_mem = 0.0
+    total_mem_limit = 0.0
+    total_rx = 0.0
+    total_tx = 0.0
+    total_storage = 0
+    max_uptime = 0
+
+    for c in containers:
+        name = c.labels.get("openclaw.name", "")
+        total_storage += get_bot_storage(name)
+
+        if c.status != "running":
+            continue
+        running_bots += 1
+
+        try:
+            stats = c.stats(stream=False)
+            attrs = c.attrs
+
+            # CPU
+            cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
+                        stats["precpu_stats"]["cpu_usage"]["total_usage"]
+            system_delta = stats["cpu_stats"]["system_cpu_usage"] - \
+                           stats["precpu_stats"]["system_cpu_usage"]
+            num_cpus = stats["cpu_stats"].get("online_cpus", 1)
+            if system_delta > 0:
+                total_cpu += cpu_delta / system_delta * num_cpus * 100.0
+
+            # Memory
+            mem_usage = stats["memory_stats"].get("usage", 0)
+            mem_limit = stats["memory_stats"].get("limit", 0)
+            total_mem += mem_usage / (1024 * 1024)
+            total_mem_limit += mem_limit / (1024 * 1024)
+
+            # Network
+            networks = stats.get("networks", {})
+            total_rx += sum(n.get("rx_bytes", 0) for n in networks.values()) / (1024 * 1024)
+            total_tx += sum(n.get("tx_bytes", 0) for n in networks.values()) / (1024 * 1024)
+
+            # Uptime
+            started_at = attrs.get("State", {}).get("StartedAt", "")
+            if started_at:
+                try:
+                    start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                    uptime = int((datetime.now(timezone.utc) - start).total_seconds())
+                    max_uptime = max(max_uptime, uptime)
+                except (ValueError, TypeError):
+                    pass
+        except Exception:
+            continue
+
+    return {
+        "total_bots": total_bots,
+        "running_bots": running_bots,
+        "total_cpu_percent": round(total_cpu, 2),
+        "total_memory_mb": round(total_mem, 1),
+        "total_memory_limit_mb": round(total_mem_limit, 1),
+        "total_storage_bytes": total_storage,
+        "total_network_rx_mb": round(total_rx, 2),
+        "total_network_tx_mb": round(total_tx, 2),
+        "max_uptime_seconds": max_uptime,
+    }
+
+
 def get_bot_detail(name: str) -> dict:
     """Full bot info: config content, soul content, metadata, stats."""
     name = sanitize_name(name)
@@ -929,6 +1001,16 @@ async def api_config():
         "portal_url": PORTAL_URL or None,
         "caddy_port": int(os.environ.get("CADDY_PORT", "8443")),
     }
+
+
+# --- Fleet stats ---
+
+@app.get("/api/fleet/stats")
+async def api_fleet_stats():
+    try:
+        return get_fleet_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Bot CRUD ---

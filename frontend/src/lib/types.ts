@@ -58,6 +58,18 @@ export interface BotDetail {
   cron_jobs: CronJob[];
 }
 
+export interface FleetStats {
+  total_bots: number;
+  running_bots: number;
+  total_cpu_percent: number;
+  total_memory_mb: number;
+  total_memory_limit_mb: number;
+  total_storage_bytes: number;
+  total_network_rx_mb: number;
+  total_network_tx_mb: number;
+  max_uptime_seconds: number;
+}
+
 export interface CreateBotRequest {
   name: string;
   soul?: string;

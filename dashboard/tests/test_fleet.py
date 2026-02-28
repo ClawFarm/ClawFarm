@@ -16,6 +16,7 @@ from app import (
     generate_config,
     get_bot_cron_jobs,
     get_bot_storage,
+    get_fleet_stats,
     list_backups,
     read_meta,
     rollback_to_backup,
@@ -712,3 +713,64 @@ class TestBotCronJobs:
         cron_dir.mkdir(parents=True)
         (cron_dir / "jobs.json").write_text("not json")
         assert get_bot_cron_jobs("badcron") == []
+
+
+# ===========================================================================
+# Fleet Stats
+# ===========================================================================
+class TestFleetStats:
+    def _mock_container(self, name, status="running", port=3001):
+        """Create a mock Docker container for fleet stats tests."""
+        container = MagicMock()
+        container.labels = {"openclaw.name": name, "openclaw.port": str(port)}
+        container.name = f"openclaw-bot-{name}"
+        container.status = status
+        container.attrs = {
+            "State": {"StartedAt": "2026-02-28T10:00:00Z"},
+            "RestartCount": 0,
+        }
+        container.stats.return_value = {
+            "cpu_stats": {
+                "cpu_usage": {"total_usage": 200000},
+                "system_cpu_usage": 10000000,
+                "online_cpus": 4,
+            },
+            "precpu_stats": {
+                "cpu_usage": {"total_usage": 100000},
+                "system_cpu_usage": 9000000,
+            },
+            "memory_stats": {"usage": 100 * 1024 * 1024, "limit": 1024 * 1024 * 1024},
+            "networks": {"eth0": {"rx_bytes": 5 * 1024 * 1024, "tx_bytes": 2 * 1024 * 1024}},
+        }
+        return container
+
+    def test_fleet_stats_aggregates_running_bots(self, bot_env, monkeypatch):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "bot-a")
+        _create_test_bot(bots_dir, "bot-b")
+
+        containers = [
+            self._mock_container("bot-a", status="running", port=3001),
+            self._mock_container("bot-b", status="exited", port=3002),
+        ]
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = containers
+        monkeypatch.setattr("app._get_client", lambda: mock_client)
+
+        result = get_fleet_stats()
+        assert result["total_bots"] == 2
+        assert result["running_bots"] == 1
+        assert result["total_cpu_percent"] > 0
+        assert result["total_memory_mb"] > 0
+        assert result["total_storage_bytes"] > 0
+
+    def test_fleet_stats_empty_fleet(self, bot_env, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        monkeypatch.setattr("app._get_client", lambda: mock_client)
+
+        result = get_fleet_stats()
+        assert result["total_bots"] == 0
+        assert result["running_bots"] == 0
+        assert result["total_cpu_percent"] == 0
+        assert result["total_storage_bytes"] == 0

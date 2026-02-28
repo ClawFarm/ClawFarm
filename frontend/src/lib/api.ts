@@ -1,4 +1,4 @@
-import type { Bot, BotDetail, BotStats, Backup, CreateBotRequest } from "./types";
+import type { Bot, BotDetail, BotStats, Backup, CreateBotRequest, FleetStats } from "./types";
 
 const API_BASE = "/api";
 
@@ -21,6 +21,7 @@ export interface PortalConfig {
 
 export const api = {
   getConfig: () => request<PortalConfig>("/config"),
+  getFleetStats: () => request<FleetStats>("/fleet/stats"),
   listBots: () => request<Bot[]>("/bots"),
   createBot: (data: CreateBotRequest) =>
     request<Bot>("/bots", { method: "POST", body: JSON.stringify(data) }),
