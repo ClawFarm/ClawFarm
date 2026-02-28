@@ -1,8 +1,8 @@
 services:
   dashboard:
     build: ./dashboard
-    ports:
-      - "${DASHBOARD_PORT:-8080}:8080"
+    expose:
+      - "8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./bots:/data/bots
@@ -12,4 +12,14 @@ services:
       - TEMPLATE_DIR=/data/bot-template
     env_file:
       - .env
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    environment:
+      - API_URL=http://dashboard:8080
+    depends_on:
+      - dashboard
     restart: unless-stopped

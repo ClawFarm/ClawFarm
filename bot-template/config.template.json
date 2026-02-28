@@ -9,7 +9,7 @@
   },
   "compaction": {
     "enabled": true,
-    "maxMessages": 50
+    "maxMessages": 150
   },
   "memory": {
     "enabled": true

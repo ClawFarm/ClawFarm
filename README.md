@@ -1,21 +1,26 @@
-# OpenClaw Fleet Manager
+# ClawFleetManager
 
-A Docker-based fleet manager for OpenClaw bots. Provides a FastAPI web dashboard to provision, manage, and network-isolate bot containers. Configure your LLM endpoint once — every bot inherits it automatically.
+A Docker-based fleet manager for OpenClaw bots. Provides a Next.js dashboard to provision, manage, and network-isolate bot containers with per-bot metrics, backups, and rollback. Configure your LLM endpoint once — every bot inherits it automatically.
 
 ## Architecture
 
-The fleet manager runs as a single dashboard container that communicates with the Docker daemon to create and manage bot containers. Each bot gets its own Docker bridge network, config directory, and auto-allocated port.
-
 ```
-┌─────────────────────────────┐
-│   Dashboard (FastAPI)       │  ← docker-compose service
-│   - Web UI on :8080         │
-│   - Manages bot lifecycle   │
-│   - Mounts Docker socket    │
-└─────────┬───────────────────┘
-          │ Docker API
-    ┌─────┼─────┬─────────┐
-    ▼     ▼     ▼         ▼
+┌──────────────────────────────┐
+│  Frontend (Next.js :3000)    │  ← public entry point
+│  - Dashboard UI              │
+│  - Bot detail + metrics      │
+│  - Proxies /api/* to backend │
+└──────────┬───────────────────┘
+           │ HTTP proxy
+┌──────────▼───────────────────┐
+│  Backend (FastAPI :8080)     │  ← internal only
+│  - Bot lifecycle API         │
+│  - Metrics, backup, rollback │
+│  - Mounts Docker socket      │
+└──────────┬───────────────────┘
+           │ Docker API
+    ┌──────┼──────┬──────────┐
+    ▼      ▼      ▼          ▼
   Bot A  Bot B  Bot C  ... Bot N
   :3001  :3002  :3003     :30xx
   (each on its own bridge network)
@@ -23,7 +28,7 @@ The fleet manager runs as a single dashboard container that communicates with th
 
 ## Quick Start
 
-1. Clone the repo and create your environment file:
+1. Create your environment file:
 
 ```bash
 cp .env.example .env
@@ -36,7 +41,7 @@ cp .env.example .env
 bash scripts/init.sh
 ```
 
-3. Open `http://localhost:8080` in your browser.
+3. Open `http://localhost:3000` in your browser.
 
 ## Environment Variables
 
@@ -48,39 +53,56 @@ bash scripts/init.sh
 | `LLM_MODEL` | Model name injected into bot configs | `qwen3.5-122b` |
 | `BOT_PORT_START` | Start of bot port range | `3001` |
 | `BOT_PORT_END` | End of bot port range | `3100` |
-| `DASHBOARD_PORT` | Dashboard web UI port | `8080` |
+| `DASHBOARD_PORT` | Frontend port (default 3000) | `3000` |
 | `OPENCLAW_IMAGE` | Docker image for bot containers | `ghcr.io/openclaw/openclaw:latest` |
+
+## Bot Operations
+
+| Operation | Description |
+|-----------|-------------|
+| **Create** | New bot from template with auto-allocated port |
+| **Duplicate** | Copy a bot's actual config + soul to a new bot |
+| **Fork** | Duplicate with lineage tracking (forked_from metadata) |
+| **Backup** | Snapshot current config + soul to timestamped backup |
+| **Rollback** | Restore from backup (auto-backs up current state first) |
+| **Start/Stop/Restart** | Container lifecycle control |
+| **Delete** | Remove container, network, and config directory |
 
 ## Network Isolation
 
-Each bot runs on its own Docker bridge network. The `network/setup-isolation.sh` script applies iptables rules on the `DOCKER-USER` chain to enforce isolation:
+Each bot runs on its own Docker bridge network. The `network/setup-isolation.sh` script applies iptables rules on the `DOCKER-USER` chain:
 
 1. **ACCEPT** established/related connections
 2. **ACCEPT** traffic to the configured LLM server (`LLM_HOST:LLM_PORT`)
-3. **DROP** all RFC1918 private network destinations (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
-4. **RETURN** — allows internet access for everything else
+3. **ACCEPT** incoming connections to container service ports (8080 API, 3000 bot UIs) — allows LAN access
+4. **DROP** all RFC1918 private network destinations (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+5. **RETURN** — allows internet access for everything else
 
-This means bots can reach the internet and the LLM server, but cannot access the LAN or communicate with each other.
+Bots can reach the internet and the LLM server, but cannot access the LAN or each other.
 
 ## API Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/` | Serve the HTML dashboard |
-| `GET` | `/api/bots` | List all bots with status, port, name |
+| `GET` | `/api/bots` | List all bots with status, port, metadata |
 | `POST` | `/api/bots` | Create a bot (`{name, soul?, extra_config?}`) |
 | `POST` | `/api/bots/{name}/start` | Start a stopped bot |
 | `POST` | `/api/bots/{name}/stop` | Stop a running bot |
 | `POST` | `/api/bots/{name}/restart` | Restart a bot |
 | `DELETE` | `/api/bots/{name}` | Remove bot container, network, and config |
 | `GET` | `/api/bots/{name}/logs` | Last 200 lines of container logs |
+| `POST` | `/api/bots/{name}/duplicate` | Duplicate bot (`{new_name}`) |
+| `POST` | `/api/bots/{name}/fork` | Fork with lineage (`{new_name}`) |
+| `POST` | `/api/bots/{name}/backup` | Create backup snapshot |
+| `GET` | `/api/bots/{name}/backups` | List backup history |
+| `POST` | `/api/bots/{name}/rollback` | Rollback to backup (`{timestamp}`) |
+| `GET` | `/api/bots/{name}/meta` | Get bot metadata |
+| `GET` | `/api/bots/{name}/stats` | Live container metrics |
+| `GET` | `/api/bots/{name}/detail` | Full detail (config, soul, meta, stats) |
 
 ## Running Tests
 
-Tests validate pure logic (sanitization, config generation, deep merge, port allocation) without requiring a Docker daemon:
-
 ```bash
 cd dashboard
-pip install -r requirements.txt
-pytest -v
+uv run pytest -v
 ```

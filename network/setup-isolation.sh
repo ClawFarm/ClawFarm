@@ -24,12 +24,19 @@ iptables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 # 2. Accept traffic to the local LLM server
 iptables -A DOCKER-USER -d "$LLM_HOST" -p tcp --dport "$LLM_PORT" -j ACCEPT
 
-# 3. Drop all RFC1918 (private network) destinations
+# 3. Accept incoming connections to container services (LAN access)
+#    After DNAT, destination ports are the container-internal ports:
+#    - 8080: dashboard
+#    - 3000: bot gateway (OpenClaw UI)
+iptables -A DOCKER-USER -p tcp --dport 8080 -j ACCEPT
+iptables -A DOCKER-USER -p tcp --dport 3000 -j ACCEPT
+
+# 5. Drop all RFC1918 (private network) destinations — blocks bot-to-LAN and bot-to-bot
 iptables -A DOCKER-USER -d 10.0.0.0/8 -j DROP
 iptables -A DOCKER-USER -d 172.16.0.0/12 -j DROP
 iptables -A DOCKER-USER -d 192.168.0.0/16 -j DROP
 
-# 4. Return (implicit accept for internet traffic)
+# 6. Return (implicit accept for internet traffic)
 iptables -A DOCKER-USER -j RETURN
 
 echo "Network isolation rules applied (LLM allowed: ${LLM_HOST}:${LLM_PORT})"
