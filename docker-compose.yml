@@ -1,0 +1,15 @@
+services:
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./bots:/data/bots
+      - ./bot-template:/data/bot-template
+    environment:
+      - BOTS_DIR=/data/bots
+      - TEMPLATE_DIR=/data/bot-template
+    env_file:
+      - .env
+    restart: unless-stopped

@@ -1,0 +1,18 @@
+{
+  "gateway": {
+    "port": 3000
+  },
+  "llm": {
+    "provider": "openai-compatible",
+    "baseUrl": "{{LLM_BASE_URL}}",
+    "model": "{{LLM_MODEL}}"
+  },
+  "compaction": {
+    "enabled": true,
+    "maxMessages": 50
+  },
+  "memory": {
+    "enabled": true
+  },
+  "channels": []
+}

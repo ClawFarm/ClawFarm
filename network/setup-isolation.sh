@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Idempotent iptables rules for bot network isolation.
+# Bots can reach the internet and the LLM server, but not the LAN or each other.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../.env"
+
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    source "$ENV_FILE"
+    set +a
+fi
+
+: "${LLM_HOST:?LLM_HOST must be set}"
+: "${LLM_PORT:?LLM_PORT must be set}"
+
+# Flush existing DOCKER-USER rules and rebuild
+iptables -F DOCKER-USER
+
+# 1. Accept established / related connections
+iptables -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# 2. Accept traffic to the local LLM server
+iptables -A DOCKER-USER -d "$LLM_HOST" -p tcp --dport "$LLM_PORT" -j ACCEPT
+
+# 3. Drop all RFC1918 (private network) destinations
+iptables -A DOCKER-USER -d 10.0.0.0/8 -j DROP
+iptables -A DOCKER-USER -d 172.16.0.0/12 -j DROP
+iptables -A DOCKER-USER -d 192.168.0.0/16 -j DROP
+
+# 4. Return (implicit accept for internet traffic)
+iptables -A DOCKER-USER -j RETURN
+
+echo "Network isolation rules applied (LLM allowed: ${LLM_HOST}:${LLM_PORT})"

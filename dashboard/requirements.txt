@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+docker
+jinja2
+pydantic
+python-dotenv
+pytest
