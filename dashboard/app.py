@@ -335,6 +335,7 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
     llm_model = os.environ.get("LLM_MODEL", "Qwen3.5-122B-A10B")
     llm_api_key = os.environ.get("LLM_API_KEY", "none")
     llm_base_url = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
+    brave_api_key = os.environ.get("BRAVE_API_KEY", "")
 
     oc_config = {
         "models": {
@@ -371,9 +372,17 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
             "ownerDisplay": "raw",
         },
         "gateway": {
+            "auth": {
+                "mode": "trusted-proxy",
+                "trustedProxy": {
+                    "userHeader": "X-Forwarded-User",
+                },
+            },
             "controlUi": {"dangerouslyAllowHostHeaderOriginFallback": True},
             "trustedProxies": ["172.16.0.0/12"],
         },
+        **({"tools": {"web": {"search": {"provider": "brave", "apiKey": brave_api_key}}}}
+           if brave_api_key else {}),
     }
     with open(oc_dir / "openclaw.json", "w") as f:
         json.dump(oc_config, f, indent=2)
@@ -437,7 +446,11 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
         image,
         name=container_name,
         detach=True,
-        command=["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan"],
+        command=[
+            "node", "openclaw.mjs", "gateway",
+            "--allow-unconfigured", "--bind", "lan",
+            *(["--auth", "trusted-proxy"] if in_compose else []),
+        ],
         ports=port_bindings,
         volumes={
             _host_path(bot_dir): {"bind": "/data", "mode": "rw"},
@@ -794,10 +807,20 @@ def _sync_caddy_config() -> None:
             bot_servers[f"bot_{name}"] = {
                 "listen": [f":{port}"],
                 "routes": [{
-                    "handle": [{
-                        "handler": "reverse_proxy",
-                        "upstreams": [{"dial": f"{container_name}:18789"}],
-                    }],
+                    "handle": [
+                        {
+                            "handler": "headers",
+                            "request": {
+                                "set": {
+                                    "X-Forwarded-User": ["admin"],
+                                },
+                            },
+                        },
+                        {
+                            "handler": "reverse_proxy",
+                            "upstreams": [{"dial": f"{container_name}:18789"}],
+                        },
+                    ],
                 }],
                 "tls_connection_policies": tls_policy,
             }
