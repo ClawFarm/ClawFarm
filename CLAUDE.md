@@ -122,7 +122,7 @@ Without this, bot containers get volume mounts pointing to `/data/bots/...` whic
 
 ### File Permissions for Bot Containers
 
-The dashboard container runs as root and creates files owned by root. OpenClaw containers run as `node` (UID 1000). The `_fix_openclaw_perms()` function in `app.py` chowns the `.openclaw/` directory to UID 1000 after creating or restoring files. This runs after bot creation, duplicate, fork, and rollback.
+The dashboard container runs as UID 1000 (matching OpenClaw's `node` user and the typical host user). This means all files created by the dashboard are naturally readable/writable by bot containers — no `chown`/`chmod` fixups needed. Docker socket access is granted via `group_add` in `docker-compose.yml` using the host's docker group GID (`DOCKER_GID` env var).
 
 ### Caddy HTTPS Reverse Proxy
 

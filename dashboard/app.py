@@ -227,9 +227,6 @@ def rollback_to_backup(name: str, timestamp: str) -> dict:
             except (json.JSONDecodeError, KeyError):
                 pass
 
-        # Fix permissions for container access
-        _fix_openclaw_perms(dst_oc)
-
     meta = ensure_meta(name)
     meta["modified_at"] = _now_iso()
     write_meta(name, meta)
@@ -387,23 +384,7 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str) -> Path:
     with open(oc_dir / "openclaw.json", "w") as f:
         json.dump(oc_config, f, indent=2)
 
-    # Make everything owned and writable by the container's node user (UID 1000)
-    _fix_openclaw_perms(oc_dir)
-
     return oc_dir
-
-
-def _fix_openclaw_perms(oc_dir: Path) -> None:
-    """Set ownership to UID 1000 (node) and open permissions on .openclaw/."""
-    for p in oc_dir.rglob("*"):
-        p.chmod(0o777 if p.is_dir() else 0o666)
-    oc_dir.chmod(0o777)
-    try:
-        import subprocess
-        subprocess.run(["chown", "-R", "1000:1000", str(oc_dir)],
-                       check=False, capture_output=True)
-    except Exception:
-        pass  # chown may not be available outside Docker
 
 
 def _host_path(container_path: Path) -> str:

@@ -3,6 +3,8 @@ services:
     build:
       context: ./dashboard
       network: host
+    group_add:
+      - "${DOCKER_GID:-988}"
     expose:
       - "8080"
     volumes:
