@@ -29,6 +29,16 @@ log = logging.getLogger(__name__)
 os.environ.setdefault("LLM_CONTEXT_WINDOW", "128000")
 os.environ.setdefault("LLM_MAX_TOKENS", "8192")
 
+# Provider-specific model defaults
+os.environ.setdefault("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+os.environ.setdefault("OPENAI_MODEL", "gpt-4o")
+os.environ.setdefault("MINIMAX_MODEL", "MiniMax-M1")
+os.environ.setdefault("MINIMAX_CONTEXT_WINDOW", "1000000")
+os.environ.setdefault("MINIMAX_MAX_TOKENS", "8192")
+os.environ.setdefault("QWEN_MODEL", "qwen-plus")
+os.environ.setdefault("QWEN_CONTEXT_WINDOW", "131072")
+os.environ.setdefault("QWEN_MAX_TOKENS", "8192")
+
 # ---------------------------------------------------------------------------
 # Path constants (overridable via env for Docker mount paths)
 # ---------------------------------------------------------------------------
@@ -300,7 +310,15 @@ def list_templates() -> list[dict]:
         soul_preview = ""
         if soul_path.exists():
             soul_preview = soul_path.read_text()[:200]
-        templates.append({"name": d.name, "soul_preview": soul_preview})
+        description = ""
+        meta_path = d / "template.meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+                description = meta.get("description", "")
+            except (json.JSONDecodeError, OSError):
+                pass
+        templates.append({"name": d.name, "soul_preview": soul_preview, "description": description})
     return templates
 
 
@@ -788,6 +806,11 @@ def _launch_container(name: str, bot_dir: Path, template: str = "default") -> di
     oc_dir = _prepare_openclaw_home(bot_dir, soul_text, trusted_proxies=trusted_proxies,
                                     bot_name=name, template_name=template)
 
+    # Forward provider API keys so OpenClaw's built-in providers can detect them.
+    # MiniMax/Qwen keys are baked into openclaw.json via template placeholders instead.
+    _provider_env_keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+    container_env = {k: v for k in _provider_env_keys if (v := os.environ.get(k))}
+
     container = client.containers.run(
         image,
         name=container_name,
@@ -807,6 +830,7 @@ def _launch_container(name: str, bot_dir: Path, template: str = "default") -> di
             "openclaw.port": str(port),
             "openclaw.name": name,
         },
+        environment=container_env,
         network=network_name,
         restart_policy={"Name": "unless-stopped"},
         healthcheck={

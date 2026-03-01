@@ -1,0 +1,4 @@
+{
+  "description": "Custom OpenAI-compatible endpoint (vLLM, Ollama, LM Studio)",
+  "env_hint": "Requires LLM_BASE_URL, LLM_MODEL, LLM_API_KEY"
+}

@@ -19,10 +19,13 @@ botfarm/
 │   ├── src/lib/            # api.ts (API client), types.ts, format.ts
 │   ├── next.config.ts      # Proxies /api/* to backend via rewrites
 │   └── Dockerfile
-├── bot-template/           # Bot templates (one dir per template)
-│   └── default/
-│       ├── openclaw.template.json  # OpenClaw config with {{ENV_VAR}} placeholders
-│       └── SOUL.md
+├── bot-template/           # Bot templates (one dir per provider)
+│   ├── default/            # Anthropic Claude (recommended)
+│   ├── openai/             # OpenAI GPT
+│   ├── minimax/            # MiniMax (budget-friendly)
+│   ├── qwen/               # Qwen via DashScope (budget-friendly)
+│   ├── custom-endpoint/    # Self-hosted vLLM, Ollama, LM Studio
+│   └── researcher/         # Research-focused (custom endpoint)
 ├── bots/                   # Runtime: each bot gets a subdirectory (gitignored)
 ├── network/setup-isolation.sh  # iptables rules for bot network isolation
 ├── docker-compose.yml      # Production: dashboard + frontend + Caddy
@@ -82,13 +85,28 @@ All tests are filesystem-based with monkeypatched paths — no Docker needed.
 Templates live in `bot-template/`. Each template is a directory containing:
 - `openclaw.template.json` — OpenClaw native config with `{{ENV_VAR}}` placeholder syntax
 - `SOUL.md` — Bot personality
+- `template.meta.json` — Display metadata (`description`, `env_hint`)
 
-The `default` template is used when no template is specified. `{{VAR}}` placeholders are replaced with env var values at bot creation time. Unquoted placeholders (e.g., `{{LLM_CONTEXT_WINDOW}}`) become raw numbers after substitution.
+**Provider templates:**
 
-ClawFarm injects gateway auth, proxy config, and tool settings on top of the resolved template — users don't touch those fields. Create new templates by copying `default/` and editing.
+| Template | Provider | Type | Required env vars |
+|----------|----------|------|-------------------|
+| `default` | Anthropic Claude | Built-in provider | `ANTHROPIC_API_KEY` |
+| `openai` | OpenAI GPT | Built-in provider | `OPENAI_API_KEY` |
+| `minimax` | MiniMax | OAI-compatible | `MINIMAX_API_KEY` |
+| `qwen` | Qwen/DashScope | OAI-compatible | `QWEN_API_KEY` |
+| `custom-endpoint` | Self-hosted (vLLM, Ollama) | OAI-compatible | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` |
+
+**Built-in provider templates** (Anthropic, OpenAI) are minimal — they don't define `models.providers` because OpenClaw auto-detects the provider from the API key env var. The API key is forwarded to bot containers via Docker `environment`.
+
+**OAI-compatible templates** (MiniMax, Qwen, custom-endpoint) define `models.providers` with a base URL and use `{{ENV_VAR}}` placeholders for the API key. The key is baked into `openclaw.json` at bot creation time.
+
+`{{VAR}}` placeholders are replaced with env var values at bot creation time. Unquoted placeholders (e.g., `{{LLM_CONTEXT_WINDOW}}`) become raw numbers after substitution.
+
+ClawFarm injects gateway auth, proxy config, and tool settings on top of the resolved template — users don't touch those fields. Create new templates by copying an existing one and editing.
 
 ### OpenClaw API Mode
-Bots use `openai-completions` API mode (NOT `openai-responses`). This maps to `/v1/chat/completions` which is vLLM's core API with full tool calling support. The `openai-responses` mode uses `/v1/responses` and does NOT send tool definitions to local models.
+The `custom-endpoint` and related templates use `openai-completions` API mode (NOT `openai-responses`). This maps to `/v1/chat/completions` which is vLLM's core API with full tool calling support. The `openai-responses` mode uses `/v1/responses` and does NOT send tool definitions to local models. Built-in provider templates (Anthropic, OpenAI) use OpenClaw's native wire protocol for each provider (e.g., `anthropic-messages` for Anthropic).
 
 ### Bot Container Setup
 Each bot gets:
@@ -244,10 +262,18 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `LLM_BASE_URL` | Yes | vLLM endpoint (e.g., `http://your-llm-server:8000/v1`) |
-| `LLM_MODEL` | Yes | Model name (e.g., `Qwen3.5-122B-A10B`) |
-| `LLM_API_KEY` | Yes | API key for the LLM server |
-| `LLM_CONTEXT_WINDOW` | No | Model context window size in tokens (default: 128000) |
+| `ANTHROPIC_API_KEY` | For Anthropic | Anthropic API key (default template) |
+| `ANTHROPIC_MODEL` | No | Model name (default: `claude-sonnet-4-6`) |
+| `OPENAI_API_KEY` | For OpenAI | OpenAI API key (openai template) |
+| `OPENAI_MODEL` | No | Model name (default: `gpt-4o`) |
+| `MINIMAX_API_KEY` | For MiniMax | MiniMax API key (minimax template) |
+| `MINIMAX_MODEL` | No | Model name (default: `MiniMax-M1`) |
+| `QWEN_API_KEY` | For Qwen | DashScope API key (qwen template) |
+| `QWEN_MODEL` | No | Model name (default: `qwen-plus`) |
+| `LLM_BASE_URL` | For custom | Custom endpoint URL (custom-endpoint template) |
+| `LLM_MODEL` | For custom | Model name for custom endpoint |
+| `LLM_API_KEY` | For custom | API key for custom endpoint |
+| `LLM_CONTEXT_WINDOW` | No | Context window size in tokens (default: 128000) |
 | `LLM_MAX_TOKENS` | No | Max output tokens per response (default: 8192) |
 | `LLM_HOST` | For isolation | LLM server IP (used by iptables rules) |
 | `LLM_PORT` | For isolation | LLM server port (used by iptables rules) |

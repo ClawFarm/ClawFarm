@@ -75,17 +75,24 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
             autoFocus
           />
           {templates.length > 1 && (
-            <select
-              value={template}
-              onChange={(e) => handleTemplateChange(e.target.value)}
-              className="w-full rounded-md border border-border bg-secondary px-3 py-2 text-sm text-foreground"
-            >
-              {templates.map((t) => (
-                <option key={t.name} value={t.name}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
+            <div className="space-y-1">
+              <select
+                value={template}
+                onChange={(e) => handleTemplateChange(e.target.value)}
+                className="w-full rounded-md border border-border bg-secondary px-3 py-2 text-sm text-foreground"
+              >
+                {templates.map((t) => (
+                  <option key={t.name} value={t.name}>
+                    {t.description ? `${t.name} — ${t.description}` : t.name}
+                  </option>
+                ))}
+              </select>
+              {templates.find((t) => t.name === template)?.description && (
+                <p className="text-xs text-muted-foreground px-1">
+                  {templates.find((t) => t.name === template)?.description}
+                </p>
+              )}
+            </div>
           )}
           <Textarea
             placeholder="SOUL.md — custom personality (optional)"

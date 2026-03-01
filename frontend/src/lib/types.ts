@@ -88,6 +88,7 @@ export interface FleetStats {
 export interface Template {
   name: string;
   soul_preview: string;
+  description: string;
 }
 
 export interface CreateBotRequest {

@@ -1,0 +1,4 @@
+{
+  "description": "OpenAI GPT",
+  "env_hint": "Requires OPENAI_API_KEY"
+}

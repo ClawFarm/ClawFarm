@@ -1,0 +1,4 @@
+{
+  "description": "Qwen via DashScope (budget-friendly)",
+  "env_hint": "Requires QWEN_API_KEY"
+}

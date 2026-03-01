@@ -1,0 +1,34 @@
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "minimax": {
+        "baseUrl": "https://api.minimaxi.chat/v1",
+        "apiKey": "{{MINIMAX_API_KEY}}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "{{MINIMAX_MODEL}}",
+            "name": "{{MINIMAX_MODEL}}",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": {{MINIMAX_CONTEXT_WINDOW}},
+            "maxTokens": {{MINIMAX_MAX_TOKENS}}
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "minimax/{{MINIMAX_MODEL}}",
+      "compaction": {"mode": "safeguard"}
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  }
+}

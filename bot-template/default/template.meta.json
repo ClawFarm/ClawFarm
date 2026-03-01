@@ -1,0 +1,4 @@
+{
+  "description": "Anthropic Claude (recommended)",
+  "env_hint": "Requires ANTHROPIC_API_KEY"
+}

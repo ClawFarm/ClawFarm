@@ -1,0 +1,34 @@
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "qwen": {
+        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "apiKey": "{{QWEN_API_KEY}}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "{{QWEN_MODEL}}",
+            "name": "{{QWEN_MODEL}}",
+            "reasoning": false,
+            "input": ["text", "image"],
+            "contextWindow": {{QWEN_CONTEXT_WINDOW}},
+            "maxTokens": {{QWEN_MAX_TOKENS}}
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "qwen/{{QWEN_MODEL}}",
+      "compaction": {"mode": "safeguard"}
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  }
+}

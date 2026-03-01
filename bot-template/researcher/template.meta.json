@@ -1,0 +1,4 @@
+{
+  "description": "Research-focused agent (custom endpoint)",
+  "env_hint": "Requires LLM_BASE_URL, LLM_MODEL, LLM_API_KEY"
+}

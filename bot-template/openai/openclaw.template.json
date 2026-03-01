@@ -1,7 +1,7 @@
 {
   "agents": {
     "defaults": {
-      "model": "anthropic/{{ANTHROPIC_MODEL}}",
+      "model": "openai/{{OPENAI_MODEL}}",
       "compaction": {"mode": "safeguard"}
     }
   },
