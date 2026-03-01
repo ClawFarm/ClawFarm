@@ -6,7 +6,9 @@
 }
 
 :8443 {
-	tls internal
+	tls internal {
+		on_demand
+	}
 
 	handle /api/* {
 		reverse_proxy dashboard:8080

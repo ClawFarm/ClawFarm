@@ -1291,6 +1291,8 @@ def _build_tls_config() -> tuple[list, dict, str]:
     """Build TLS connection policies, TLS app config, and scheme based on TLS_MODE.
 
     Returns (tls_connection_policies, tls_app_config, scheme).
+    tls_connection_policies must be [{}] (not []) for HTTPS modes — Caddy
+    requires this field on the server to activate TLS on the listener.
     """
     if TLS_MODE == "off":
         return [], {}, "http"
@@ -1302,7 +1304,7 @@ def _build_tls_config() -> tuple[list, dict, str]:
         policy = {"issuers": [issuer]}
         if DOMAIN:
             policy["subjects"] = [DOMAIN]
-        return [], {"automation": {"policies": [policy]}}, "https"
+        return [{}], {"automation": {"policies": [policy]}}, "https"
     elif TLS_MODE == "custom":
         return (
             [{"certificate_selection": {"any_tag": ["cert0"]}}],
@@ -1314,7 +1316,13 @@ def _build_tls_config() -> tuple[list, dict, str]:
             "https",
         )
     else:  # "internal" — default
-        return [], {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}, "https"
+        # on_demand: true is required for port-only listeners (no hostname).
+        # Without it, Caddy can't determine what hostname to put on the cert
+        # and TLS handshakes fail silently.
+        return [{}], {"automation": {"policies": [{
+            "issuers": [{"module": "internal"}],
+            "on_demand": True,
+        }]}}, "https"
 
 
 def _sync_caddy_config() -> None:
@@ -1347,8 +1355,9 @@ def _sync_caddy_config() -> None:
         tls_policy, tls_app, scheme = _build_tls_config()
 
         # forward_auth handler: subrequest to dashboard's /api/auth/verify
+        # PORTAL_URL already includes port if needed (e.g. "http://host:8080")
         login_url = (
-            f"{PORTAL_URL}:{caddy_port}/login"
+            f"{PORTAL_URL}/login"
             if PORTAL_URL else
             f"{scheme}://{{http.request.host}}:{caddy_port}/login"
         )
@@ -1494,8 +1503,11 @@ def _sync_caddy_config() -> None:
                 container_name = f"openclaw-bot-{name}"
                 bot_proxy = {"handler": "reverse_proxy", "upstreams": [{"dial": f"{container_name}:18789"}]}
                 strip_prefix = {"handler": "rewrite", "strip_path_prefix": f"/claw/{name}"}
+                cookie_flags = "Path=/; HttpOnly; SameSite=Lax"
+                if TLS_MODE != "off":
+                    cookie_flags += "; Secure"
                 set_cookie = {"handler": "headers", "response": {"set": {
-                    "Set-Cookie": [f"cfm_bot={name}; Path=/; HttpOnly; Secure; SameSite=Lax"],
+                    "Set-Cookie": [f"cfm_bot={name}; {cookie_flags}"],
                 }}}
                 ws_cookie_re = f"(?:^|;\\s*)cfm_bot={re.escape(name)}(?:;|$)"
                 if AUTH_DISABLED:
@@ -1535,7 +1547,7 @@ def _sync_caddy_config() -> None:
         # Add HTTP→HTTPS redirect server when TLS is enabled
         if TLS_MODE != "off":
             redirect_location = (
-                f"{PORTAL_URL}:{caddy_port}{{http.request.uri}}"
+                f"{PORTAL_URL}{{http.request.uri}}"
                 if PORTAL_URL else
                 f"https://{{http.request.host}}:{caddy_port}{{http.request.uri}}"
             )
@@ -1739,8 +1751,8 @@ class UpdateUserRequest(BaseModel):
 # --- Auth ---
 
 def _set_session_cookie(response: Response, token: str) -> None:
-    # Secure=True only when behind Caddy (compose mode) — TestClient uses HTTP
-    secure = bool(os.environ.get("HOST_BOTS_DIR"))
+    # Secure=True only when using TLS in compose mode — plain HTTP rejects Secure cookies
+    secure = bool(os.environ.get("HOST_BOTS_DIR")) and TLS_MODE != "off"
     response.set_cookie(
         "cfm_session", token,
         httponly=True, secure=secure, samesite="lax",

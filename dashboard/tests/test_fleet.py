@@ -25,6 +25,7 @@ from app import (
     _redact_config,
     _resolve_template,
     _save_users,
+    _sync_caddy_config,
     _user_can_access_bot,
     _verify_password,
     _effective_status,
@@ -1675,11 +1676,12 @@ class TestBuildTlsConfig:
         import app
         monkeypatch.setattr(app, "TLS_MODE", "internal")
         policies, tls_app, scheme = _build_tls_config()
-        assert policies == []
+        assert policies == [{}]  # empty policy activates TLS on listener
         assert scheme == "https"
         assert "automation" in tls_app
-        issuers = tls_app["automation"]["policies"][0]["issuers"]
-        assert issuers[0]["module"] == "internal"
+        policy = tls_app["automation"]["policies"][0]
+        assert policy["issuers"][0]["module"] == "internal"
+        assert policy["on_demand"] is True  # required for port-only listeners
 
     def test_custom_mode(self, monkeypatch):
         """Custom mode: load user-provided cert files."""
@@ -1710,7 +1712,7 @@ class TestBuildTlsConfig:
         monkeypatch.setattr(app, "DOMAIN", "farm.example.com")
         monkeypatch.setenv("ACME_EMAIL", "admin@example.com")
         policies, tls_app, scheme = _build_tls_config()
-        assert policies == []
+        assert policies == [{}]  # empty policy activates TLS on listener
         assert scheme == "https"
         policy = tls_app["automation"]["policies"][0]
         assert policy["subjects"] == ["farm.example.com"]
@@ -1743,5 +1745,322 @@ class TestBuildTlsConfig:
         monkeypatch.setattr(app, "TLS_MODE", "bogus")
         policies, tls_app, scheme = _build_tls_config()
         assert scheme == "https"
-        issuers = tls_app["automation"]["policies"][0]["issuers"]
-        assert issuers[0]["module"] == "internal"
+        policy = tls_app["automation"]["policies"][0]
+        assert policy["issuers"][0]["module"] == "internal"
+        assert policy["on_demand"] is True
+
+
+# ===========================================================================
+# TestSyncCaddyConfig — full Caddy JSON config integration tests
+# ===========================================================================
+class TestSyncCaddyConfig:
+    """Tests for _sync_caddy_config() — validates the full Caddy JSON config
+    pushed to Caddy's admin API under each TLS mode and auth state."""
+
+    @pytest.fixture
+    def caddy_env(self, monkeypatch):
+        """Set up mocks for _sync_caddy_config: Docker client + requests.post.
+
+        Returns a dict with:
+        - captured: list that receives the JSON config posted to Caddy
+        - mock_client: the mocked Docker client
+        - add_bot(name): helper to add a running bot container to the mock
+        """
+        import app
+
+        # Mock Docker client with empty container list by default
+        mock_client = MagicMock()
+        containers = []
+        mock_client.containers.list.return_value = containers
+        monkeypatch.setattr("app._get_client", lambda: mock_client)
+
+        # Capture what gets POSTed to Caddy admin API
+        # _sync_caddy_config does `import requests as _req` internally,
+        # so we need to mock requests.post on the real module.
+        import requests as _real_req
+        captured = []
+        _orig_post = _real_req.post
+
+        def _capture_post(url, json=None, headers=None, timeout=None):
+            captured.append(json)
+
+        monkeypatch.setattr(_real_req, "post", _capture_post)
+
+        # Enable compose mode (bot routes only added when HOST_BOTS_DIR is set)
+        monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
+
+        # Defaults
+        monkeypatch.setattr(app, "CADDY_ADMIN_URL", "http://caddy:2019")
+        monkeypatch.setattr(app, "AUTH_DISABLED", False)
+        monkeypatch.setattr(app, "PORTAL_URL", "")
+
+        def add_bot(name):
+            bot = MagicMock()
+            bot.labels = {"openclaw.name": name, "openclaw.bot": "true"}
+            containers.append(bot)
+
+        return {"captured": captured, "mock_client": mock_client, "add_bot": add_bot}
+
+    def test_internal_mode_no_bots(self, monkeypatch, caddy_env):
+        """Internal mode with no bots: self-signed TLS + redirect server."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setenv("CADDY_PORT", "8443")
+
+        _sync_caddy_config()
+
+        assert len(caddy_env["captured"]) == 1
+        config = caddy_env["captured"][0]
+
+        # Admin API
+        assert config["admin"]["listen"] == ":2019"
+
+        # Main server listens on configured port
+        main = config["apps"]["http"]["servers"]["main"]
+        assert main["listen"] == [":8443"]
+
+        # TLS app: internal issuer with on_demand
+        tls_app = config["apps"]["tls"]
+        policy = tls_app["automation"]["policies"][0]
+        assert policy["issuers"][0]["module"] == "internal"
+        assert policy["on_demand"] is True
+
+        # tls_connection_policies with empty policy activates TLS
+        assert main["tls_connection_policies"] == [{}]
+
+        # Redirect server exists (HTTP→HTTPS)
+        redirect = config["apps"]["http"]["servers"]["redirect"]
+        assert redirect["listen"] == [":80"]
+        redir_loc = redirect["routes"][0]["handle"][0]["headers"]["Location"][0]
+        assert "https://" in redir_loc
+        assert ":8443" in redir_loc
+
+    def test_internal_mode_with_bots(self, monkeypatch, caddy_env):
+        """Internal mode with bots: bot routes inserted before catch-all."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setenv("CADDY_PORT", "8443")
+
+        caddy_env["add_bot"]("alice")
+        caddy_env["add_bot"]("bob")
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        main = config["apps"]["http"]["servers"]["main"]
+        routes = main["routes"]
+
+        # Find bot routes by matching path patterns
+        bot_routes = [r for r in routes if any(
+            f"/claw/" in p
+            for m in r.get("match", [])
+            for p in m.get("path", [])
+        )]
+        assert len(bot_routes) == 2
+
+        bot_names_found = set()
+        for r in bot_routes:
+            for m in r["match"]:
+                for p in m.get("path", []):
+                    if p.startswith("/claw/"):
+                        name = p.split("/")[2]
+                        bot_names_found.add(name)
+        assert bot_names_found == {"alice", "bob"}
+
+        # Bot route handlers: forward_auth + set-cookie + strip_prefix + proxy
+        for r in bot_routes:
+            handlers = r["handle"]
+            handler_types = [h["handler"] for h in handlers]
+            # Auth enabled: forward_auth (reverse_proxy) + headers (cookie) + rewrite (strip) + reverse_proxy (bot)
+            assert "reverse_proxy" in handler_types
+            assert "rewrite" in handler_types
+            assert "headers" in handler_types
+
+        # Bot routes are before the catch-all (last route)
+        last_route = routes[-1]
+        # Last route should be the catch-all frontend route (no "match" or broad match)
+        assert "match" not in last_route or last_route["match"] == []
+
+    def test_off_mode_no_redirect_server(self, monkeypatch, caddy_env):
+        """Off mode: plain HTTP, no TLS app, no redirect server."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "off")
+        monkeypatch.setenv("CADDY_PORT", "8080")
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        servers = config["apps"]["http"]["servers"]
+
+        # Only "main" server, no "redirect"
+        assert "redirect" not in servers
+        assert "main" in servers
+
+        # No TLS app
+        assert "tls" not in config["apps"]
+
+        # Main server on HTTP port
+        assert servers["main"]["listen"] == [":8080"]
+
+    def test_custom_mode_tls_policies(self, monkeypatch, caddy_env):
+        """Custom mode: cert file references in TLS config."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "custom")
+        monkeypatch.setenv("CADDY_PORT", "8443")
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        main = config["apps"]["http"]["servers"]["main"]
+
+        # tls_connection_policies with cert tag
+        assert "tls_connection_policies" in main
+        assert main["tls_connection_policies"][0]["certificate_selection"]["any_tag"] == ["cert0"]
+
+        # TLS app with load_files
+        tls_app = config["apps"]["tls"]
+        load = tls_app["certificates"]["load_files"][0]
+        assert load["certificate"] == "/certs/cert.pem"
+        assert load["key"] == "/certs/key.pem"
+
+        # Redirect server exists
+        assert "redirect" in config["apps"]["http"]["servers"]
+
+    def test_acme_mode_full_config(self, monkeypatch, caddy_env):
+        """ACME mode: Let's Encrypt automation policy + domain subjects."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "acme")
+        monkeypatch.setattr(app, "DOMAIN", "farm.example.com")
+        monkeypatch.setenv("ACME_EMAIL", "admin@example.com")
+        monkeypatch.setenv("CADDY_PORT", "443")
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+
+        # TLS app has ACME automation
+        tls_app = config["apps"]["tls"]
+        policy = tls_app["automation"]["policies"][0]
+        assert policy["issuers"][0]["module"] == "acme"
+        assert policy["issuers"][0]["email"] == "admin@example.com"
+        assert policy["subjects"] == ["farm.example.com"]
+
+        # Main server on port 443
+        assert config["apps"]["http"]["servers"]["main"]["listen"] == [":443"]
+
+        # Redirect server (HTTPS enabled)
+        assert "redirect" in config["apps"]["http"]["servers"]
+
+    def test_auth_disabled_no_forward_auth(self, monkeypatch, caddy_env):
+        """When AUTH_DISABLED, routes should NOT have forward_auth handlers."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setattr(app, "AUTH_DISABLED", True)
+        monkeypatch.setenv("CADDY_PORT", "8443")
+
+        caddy_env["add_bot"]("testbot")
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+
+        # Auth disabled: simpler route structure (no forward_auth subrequests)
+        # API route should be direct reverse_proxy, no auth check
+        api_routes = [r for r in routes if any(
+            "/api/*" in p for m in r.get("match", []) for p in m.get("path", [])
+        )]
+        assert len(api_routes) == 1
+        # Should have exactly 1 handler (direct proxy), not 2 (auth + proxy)
+        assert len(api_routes[0]["handle"]) == 1
+        assert api_routes[0]["handle"][0]["handler"] == "reverse_proxy"
+
+        # Bot route should have hardcoded X-Forwarded-User: dev
+        bot_routes = [r for r in routes if any(
+            "/claw/testbot" in p
+            for m in r.get("match", [])
+            for p in m.get("path", [])
+        )]
+        assert len(bot_routes) == 1
+        handlers = bot_routes[0]["handle"]
+        # First handler sets X-Forwarded-User to "dev"
+        fwd_handler = handlers[0]
+        assert fwd_handler["handler"] == "headers"
+        assert fwd_handler["request"]["set"]["X-Forwarded-User"] == ["dev"]
+
+    def test_bot_route_websocket_cookie_routing(self, monkeypatch, caddy_env):
+        """Bot routes include WebSocket cookie matcher for root / connections."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setattr(app, "AUTH_DISABLED", True)  # simpler to inspect
+        monkeypatch.setenv("CADDY_PORT", "8443")
+
+        caddy_env["add_bot"]("mybot")
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+
+        bot_routes = [r for r in routes if any(
+            "/claw/mybot" in p
+            for m in r.get("match", [])
+            for p in m.get("path", [])
+        )]
+        assert len(bot_routes) == 1
+        match_clauses = bot_routes[0]["match"]
+
+        # Should have 2 match clauses: path match and WS cookie match
+        assert len(match_clauses) == 2
+
+        # First: path match
+        assert f"/claw/mybot/*" in match_clauses[0]["path"]
+        assert f"/claw/mybot" in match_clauses[0]["path"]
+
+        # Second: root WS with cookie
+        ws_match = match_clauses[1]
+        assert ws_match["path"] == ["/"]
+        assert ws_match["header"]["Upgrade"] == ["websocket"]
+        # Cookie header_regexp key must be the header name "Cookie"
+        assert "Cookie" in ws_match["header_regexp"]
+        assert ws_match["header_regexp"]["Cookie"]["name"] == "cfm_bot"
+        assert "mybot" in ws_match["header_regexp"]["Cookie"]["pattern"]
+
+    def test_portal_url_in_redirect(self, monkeypatch, caddy_env):
+        """When PORTAL_URL is set, redirect and login URLs use it."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setattr(app, "PORTAL_URL", "https://farm.example.com")
+        monkeypatch.setenv("CADDY_PORT", "8443")
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+
+        # Redirect server uses PORTAL_URL
+        redirect = config["apps"]["http"]["servers"]["redirect"]
+        redir_loc = redirect["routes"][0]["handle"][0]["headers"]["Location"][0]
+        # PORTAL_URL is used directly (already includes port if needed)
+        assert redir_loc.startswith("https://farm.example.com")
+
+    def test_caddy_unreachable_fails_silently(self, monkeypatch):
+        """When Caddy admin API is unreachable, _sync_caddy_config doesn't raise."""
+        import app
+        import requests as _real_req
+
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setattr(app, "AUTH_DISABLED", False)
+        monkeypatch.setattr(app, "PORTAL_URL", "")
+        monkeypatch.setattr(app, "CADDY_ADMIN_URL", "http://localhost:99999")
+
+        # Mock requests.post to raise ConnectionError
+        def _failing_post(*args, **kwargs):
+            raise ConnectionError("Caddy not reachable")
+        monkeypatch.setattr(_real_req, "post", _failing_post)
+
+        # Should not raise — fails silently
+        _sync_caddy_config()
