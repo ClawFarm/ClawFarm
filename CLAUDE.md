@@ -139,7 +139,7 @@ Backups are compressed `tar.gz` archives containing the full agent state: `confi
 
 The dashboard container creates bot containers via the Docker socket (`/var/run/docker.sock`). When it calls `docker.containers.run()` with volume mounts, the paths must be **host** paths — because the Docker daemon runs on the host, not inside the dashboard container.
 
-The problem: inside the dashboard container, `bot_dir.resolve()` returns `/data/bots/captain-jack` (the container-internal mount point). But the Docker daemon needs the host path, e.g., `/home/storm/projects/botfarm/bots/captain-jack`.
+The problem: inside the dashboard container, `bot_dir.resolve()` returns `/data/bots/captain-jack` (the container-internal mount point). But the Docker daemon needs the host path, e.g., `/path/to/botfarm/bots/captain-jack`.
 
 The solution: `HOST_BOTS_DIR` env var is set in `docker-compose.yml` to `${PWD}/bots`. The `_host_path()` function in `app.py` converts container-internal paths to host paths:
 
@@ -244,7 +244,7 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `LLM_BASE_URL` | Yes | vLLM endpoint (e.g., `http://10.88.100.186:8000/v1`) |
+| `LLM_BASE_URL` | Yes | vLLM endpoint (e.g., `http://your-llm-server:8000/v1`) |
 | `LLM_MODEL` | Yes | Model name (e.g., `Qwen3.5-122B-A10B`) |
 | `LLM_API_KEY` | Yes | API key for the LLM server |
 | `LLM_CONTEXT_WINDOW` | No | Model context window size in tokens (default: 128000) |

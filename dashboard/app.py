@@ -1280,7 +1280,7 @@ def _disconnect_caddy_from_network(client, network_name: str) -> None:
 CADDY_ADMIN_URL = os.environ.get("CADDY_ADMIN_URL", "http://caddy:2019")
 TLS_MODE = os.environ.get("TLS_MODE", "internal").lower()  # internal, acme, custom, off
 DOMAIN = os.environ.get("DOMAIN", "")  # Required for acme mode
-PORTAL_URL = os.environ.get("PORTAL_URL", "")  # e.g. "https://10.88.142.100"
+PORTAL_URL = os.environ.get("PORTAL_URL", "")  # e.g. "https://farm.example.com"
 
 # Auto-derive PORTAL_URL in acme mode
 if not PORTAL_URL and TLS_MODE == "acme" and DOMAIN:
@@ -1975,7 +1975,8 @@ async def api_fleet_stats(session: dict = Depends(_require_session)):
     try:
         return get_fleet_stats()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        log.warning("fleet_stats failed: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # --- Bot CRUD ---
@@ -2001,7 +2002,8 @@ async def api_create_bot(req: CreateBotRequest, session: dict = Depends(_require
     except (RuntimeError, PermissionError) as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        log.warning("create_bot failed: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/bots/{name}/start")
@@ -2081,7 +2083,8 @@ async def api_duplicate_bot(name: str, req: DuplicateRequest,
     except (RuntimeError, PermissionError) as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        log.warning("duplicate_bot failed: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/bots/{name}/fork")
@@ -2101,7 +2104,8 @@ async def api_fork_bot(name: str, req: ForkRequest,
     except (RuntimeError, PermissionError) as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+        log.warning("fork_bot failed: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # --- Backup & Rollback ---

@@ -1,4 +1,4 @@
-FROM node:22-slim AS base
+FROM node:22.22.0-slim AS base
 
 # Install dependencies
 FROM base AS deps
