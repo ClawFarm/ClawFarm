@@ -55,6 +55,10 @@ export function statusColor(status: string): string {
   switch (status) {
     case "running":
       return "bg-emerald-500/15 text-emerald-400 border-emerald-500/25";
+    case "starting":
+      return "bg-amber-500/15 text-amber-400 border-amber-500/25";
+    case "unhealthy":
+      return "bg-red-500/15 text-red-400 border-red-500/25";
     case "exited":
       return "bg-red-500/15 text-red-400 border-red-500/25";
     case "created":

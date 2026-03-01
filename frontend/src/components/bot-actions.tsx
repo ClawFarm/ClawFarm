@@ -41,7 +41,7 @@ export function BotActions({ bot, onAction }: { bot: Bot; onAction: () => void }
   return (
     <>
       <div className="flex flex-wrap gap-1.5">
-        {bot.status !== "running" ? (
+        {bot.status !== "running" && bot.status !== "starting" && bot.status !== "unhealthy" ? (
           <Button
             size="sm"
             variant="secondary"

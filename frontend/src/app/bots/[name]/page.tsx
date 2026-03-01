@@ -132,7 +132,7 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
                 </div>
               )}
               <div className="flex flex-wrap gap-1.5">
-                {detail.status !== "running" ? (
+                {detail.status !== "running" && detail.status !== "starting" && detail.status !== "unhealthy" ? (
                   <Button size="sm" variant="secondary" onClick={() => action("Start", () => api.startBot(detail!.name))}>Start</Button>
                 ) : (
                   <>

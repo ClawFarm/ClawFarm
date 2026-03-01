@@ -31,9 +31,11 @@ export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
               className={`h-2 w-2 rounded-full shrink-0 ${
                 bot.status === "running"
                   ? "bg-emerald-400"
-                  : bot.status === "exited"
-                    ? "bg-red-400"
-                    : "bg-amber-400"
+                  : bot.status === "starting"
+                    ? "bg-amber-400 animate-pulse"
+                    : bot.status === "exited" || bot.status === "unhealthy"
+                      ? "bg-red-400"
+                      : "bg-amber-400"
               }`}
             />
             <Link

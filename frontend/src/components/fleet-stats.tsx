@@ -63,7 +63,11 @@ export function FleetStats() {
       <HeroStat
         label="Agents"
         value={String(stats.running_bots)}
-        sub={`of ${stats.total_bots} running`}
+        sub={
+          stats.starting_bots > 0
+            ? `of ${stats.total_bots} total (${stats.starting_bots} starting)`
+            : `of ${stats.total_bots} running`
+        }
         accent="text-emerald-400"
       />
       <HeroStat

@@ -24,6 +24,7 @@ from app import (
     _save_users,
     _user_can_access_bot,
     _verify_password,
+    _effective_status,
     allocate_port,
     create_backup,
     create_bot,
@@ -854,16 +855,18 @@ class TestTokenUsage:
 # Fleet Stats
 # ===========================================================================
 class TestFleetStats:
-    def _mock_container(self, name, status="running", port=3001):
+    def _mock_container(self, name, status="running", port=3001, health_status="healthy"):
         """Create a mock Docker container for fleet stats tests."""
         container = MagicMock()
         container.labels = {"openclaw.name": name, "openclaw.port": str(port)}
         container.name = f"openclaw-bot-{name}"
         container.status = status
+        health = {"Status": health_status} if status == "running" else {}
         container.attrs = {
-            "State": {"StartedAt": "2026-02-28T10:00:00Z"},
+            "State": {"StartedAt": "2026-02-28T10:00:00Z", "Health": health},
             "RestartCount": 0,
         }
+        container.reload = MagicMock()
         container.stats.return_value = {
             "cpu_stats": {
                 "cpu_usage": {"total_usage": 200000},
@@ -895,10 +898,31 @@ class TestFleetStats:
         result = get_fleet_stats()
         assert result["total_bots"] == 2
         assert result["running_bots"] == 1
+        assert result["starting_bots"] == 0
         assert result["total_cpu_percent"] > 0
         assert result["total_memory_mb"] > 0
         assert result["total_storage_bytes"] > 0
         assert "total_tokens_used" in result
+
+    def test_fleet_stats_starting_bot(self, bot_env, monkeypatch):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "bot-a")
+        _create_test_bot(bots_dir, "bot-b")
+
+        containers = [
+            self._mock_container("bot-a", status="running", port=3001, health_status="healthy"),
+            self._mock_container("bot-b", status="running", port=3002, health_status="starting"),
+        ]
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = containers
+        monkeypatch.setattr("app._get_client", lambda: mock_client)
+
+        result = get_fleet_stats()
+        assert result["total_bots"] == 2
+        assert result["running_bots"] == 1
+        assert result["starting_bots"] == 1
+        # Both contribute to resource stats
+        assert result["total_cpu_percent"] > 0
 
     def test_fleet_stats_empty_fleet(self, bot_env, monkeypatch):
         mock_client = MagicMock()
@@ -908,8 +932,49 @@ class TestFleetStats:
         result = get_fleet_stats()
         assert result["total_bots"] == 0
         assert result["running_bots"] == 0
+        assert result["starting_bots"] == 0
         assert result["total_cpu_percent"] == 0
         assert result["total_storage_bytes"] == 0
+
+
+# ===========================================================================
+# Effective Status
+# ===========================================================================
+class TestEffectiveStatus:
+    def test_running_healthy(self):
+        c = MagicMock()
+        c.status = "running"
+        c.attrs = {"State": {"Health": {"Status": "healthy"}}}
+        c.reload = MagicMock()
+        assert _effective_status(c) == "running"
+
+    def test_running_starting(self):
+        c = MagicMock()
+        c.status = "running"
+        c.attrs = {"State": {"Health": {"Status": "starting"}}}
+        c.reload = MagicMock()
+        assert _effective_status(c) == "starting"
+
+    def test_running_unhealthy(self):
+        c = MagicMock()
+        c.status = "running"
+        c.attrs = {"State": {"Health": {"Status": "unhealthy"}}}
+        c.reload = MagicMock()
+        assert _effective_status(c) == "unhealthy"
+
+    def test_running_no_health(self):
+        """Backward compat: containers without healthcheck."""
+        c = MagicMock()
+        c.status = "running"
+        c.attrs = {"State": {"StartedAt": "2026-02-28T10:00:00Z"}}
+        c.reload = MagicMock()
+        assert _effective_status(c) == "running"
+
+    def test_exited(self):
+        c = MagicMock()
+        c.status = "exited"
+        c.attrs = {"State": {}}
+        assert _effective_status(c) == "exited"
 
 
 # ===========================================================================

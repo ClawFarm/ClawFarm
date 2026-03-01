@@ -694,6 +694,33 @@ def _host_path(container_path: Path) -> str:
     return str(Path(host_bots) / rel)
 
 
+def _effective_status(container) -> str:
+    """Return health-aware status for a container.
+
+    Docker status: created, running, exited, paused, dead, ...
+    Health status (when healthcheck configured): starting, healthy, unhealthy
+
+    Mapping:
+      running + starting  -> "starting"
+      running + healthy   -> "running"
+      running + unhealthy -> "unhealthy"
+      running + no health -> "running"  (backward compat: containers without healthcheck)
+      anything else       -> container.status as-is
+    """
+    if container.status != "running":
+        return container.status
+    try:
+        container.reload()
+        health = container.attrs.get("State", {}).get("Health", {}).get("Status")
+    except Exception:
+        return container.status
+    if health == "starting":
+        return "starting"
+    if health == "unhealthy":
+        return "unhealthy"
+    return "running"
+
+
 def _launch_container(name: str, bot_dir: Path) -> dict:
     """Allocate port, create network, start container. Returns bot info."""
     port = allocate_port()
@@ -746,13 +773,20 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
         },
         network=network_name,
         restart_policy={"Name": "unless-stopped"},
+        healthcheck={
+            "Test": ["CMD", "wget", "-qO-", "--spider", "http://localhost:18789/"],
+            "Interval": 3_000_000_000,       # 3s (nanoseconds)
+            "Timeout": 2_000_000_000,        # 2s
+            "StartPeriod": 90_000_000_000,   # 90s grace (gateway takes ~60s to boot)
+            "Retries": 3,                    # 3 consecutive failures after start_period -> unhealthy
+        },
     )
 
     _sync_caddy_config()
 
     return {
         "name": name,
-        "status": container.status,
+        "status": _effective_status(container),
         "port": port,
         "container_name": container_name,
         "ui_path": f"/claw/{name}/" if os.environ.get("HOST_BOTS_DIR") else None,
@@ -839,7 +873,7 @@ def list_bots() -> list[dict]:
         meta = read_meta(name)
         bots.append({
             "name": name,
-            "status": c.status,
+            "status": _effective_status(c),
             "port": int(c.labels.get("openclaw.port", 0)),
             "container_name": c.name,
             "forked_from": meta.get("forked_from"),
@@ -1012,6 +1046,7 @@ def get_fleet_stats() -> dict:
 
     total_bots = len(containers)
     running_bots = 0
+    starting_bots = 0
     total_cpu = 0.0
     total_mem = 0.0
     total_mem_limit = 0.0
@@ -1028,7 +1063,11 @@ def get_fleet_stats() -> dict:
 
         if c.status != "running":
             continue
-        running_bots += 1
+        effective = _effective_status(c)
+        if effective == "starting":
+            starting_bots += 1
+        elif effective == "running":
+            running_bots += 1
 
         try:
             stats = c.stats(stream=False)
@@ -1069,6 +1108,7 @@ def get_fleet_stats() -> dict:
     return {
         "total_bots": total_bots,
         "running_bots": running_bots,
+        "starting_bots": starting_bots,
         "total_cpu_percent": round(total_cpu, 2),
         "total_memory_mb": round(total_mem, 1),
         "total_memory_limit_mb": round(total_mem_limit, 1),
@@ -1100,7 +1140,7 @@ def get_bot_detail(name: str) -> dict:
     try:
         client = _get_client()
         container = client.containers.get(f"openclaw-bot-{name}")
-        status = container.status
+        status = _effective_status(container)
         port = int(container.labels.get("openclaw.port", 0))
         container_name = container.name
         try:
@@ -1851,7 +1891,7 @@ async def api_start_bot(name: str, ctx: dict = Depends(_require_bot_access)):
         container = client.containers.get(f"openclaw-bot-{name}")
         container.start()
         _sync_caddy_config()
-        return {"name": name, "status": "running"}
+        return {"name": name, "status": _effective_status(container)}
     except docker.errors.NotFound:
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
 
@@ -1876,7 +1916,7 @@ async def api_restart_bot(name: str, ctx: dict = Depends(_require_bot_access)):
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
         container.restart()
-        return {"name": name, "status": "running"}
+        return {"name": name, "status": _effective_status(container)}
     except docker.errors.NotFound:
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
 
@@ -2017,6 +2057,12 @@ async def api_bot_detail(name: str, ctx: dict = Depends(_require_bot_access)):
 @app.post("/api/bots/{name}/approve-devices")
 async def api_approve_devices(name: str, ctx: dict = Depends(_require_bot_access)):
     """Approve all pending device pairing requests for a bot."""
+    # In compose mode (trusted-proxy auth), device approval is unnecessary —
+    # Caddy handles all auth via X-Forwarded-User.  The CLI can't connect
+    # to the gateway anyway because it lacks the trusted-proxy header.
+    if os.environ.get("HOST_BOTS_DIR"):
+        return {"approved": 0, "message": "trusted-proxy mode, device approval not needed"}
+
     name = ctx["_bot_name"]
     client = _get_client()
     container_name = f"openclaw-bot-{name}"

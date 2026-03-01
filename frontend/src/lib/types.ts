@@ -15,7 +15,7 @@ export interface TokenUsage {
 
 export interface Bot {
   name: string;
-  status: "running" | "exited" | "created" | string;
+  status: "running" | "starting" | "unhealthy" | "exited" | "created" | string;
   port: number;
   container_name: string;
   forked_from: string | null;
@@ -74,6 +74,7 @@ export interface BotDetail {
 export interface FleetStats {
   total_bots: number;
   running_bots: number;
+  starting_bots: number;
   total_cpu_percent: number;
   total_memory_mb: number;
   total_memory_limit_mb: number;
