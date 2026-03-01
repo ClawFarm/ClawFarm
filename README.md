@@ -1,108 +1,184 @@
-# ClawFleetManager
+# ClawFarm
 
-A Docker-based fleet manager for OpenClaw bots. Provides a Next.js dashboard to provision, manage, and network-isolate bot containers with per-bot metrics, backups, and rollback. Configure your LLM endpoint once — every bot inherits it automatically.
+Self-hosted fleet manager for [OpenClaw](https://github.com/openclaw/openclaw) AI agents. Deploy, monitor, and manage autonomous agents on your own hardware.
+
+## Quick Start
+
+```bash
+# 1. Clone & configure
+git clone <repo-url> && cd botfarm
+cp .env.example .env
+# Edit .env with your LLM provider details (see Provider Setup below)
+
+# 2. Launch
+docker compose up --build -d
+
+# 3. Open https://<your-ip>:8443
+# Check logs for admin password: docker compose logs dashboard | head -20
+```
+
+That's it — no TLS certificates to generate, no Docker GID to look up. Caddy auto-generates a self-signed certificate and the dashboard auto-detects Docker socket permissions.
+
+## Deployment Modes
+
+ClawFarm supports four TLS modes via the `TLS_MODE` env var:
+
+### Internal (default) — LAN / IP access
+
+Zero-config TLS. Caddy auto-generates a self-signed certificate. Your browser will show a security warning — accept it to proceed.
+
+```env
+TLS_MODE=internal     # or just leave it unset
+CADDY_PORT=8443
+```
+
+### ACME — Public domain with Let's Encrypt
+
+Automatic certificate provisioning and renewal. Requires a public domain pointing to your server and port 80 accessible for ACME challenges.
+
+```env
+TLS_MODE=acme
+DOMAIN=farm.example.com
+CADDY_PORT=443
+# ACME_EMAIL=you@example.com   # Optional — for expiry notifications
+```
+
+### Custom — Your own certificates
+
+Use your own TLS certificates (existing PKI, corporate CA, etc).
+
+```env
+TLS_MODE=custom
+CADDY_PORT=8443
+```
+
+Place your cert and key at `certs/cert.pem` and `certs/key.pem`:
+
+```bash
+mkdir -p certs
+# Copy your cert files, or generate self-signed:
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -keyout certs/key.pem -out certs/cert.pem -days 3650 \
+  -subj "/CN=ClawFarm" \
+  -addext "subjectAltName=IP:$(hostname -I | awk '{print $1}'),IP:127.0.0.1,DNS:localhost"
+```
+
+### Off — Behind an upstream proxy
+
+Plain HTTP. Use when ClawFarm sits behind nginx, Traefik, Cloudflare, etc. that handles TLS.
+
+```env
+TLS_MODE=off
+CADDY_PORT=8080
+PORTAL_URL=https://farm.example.com   # Your proxy's external URL (for CORS + redirects)
+```
+
+## Provider Setup
+
+### Cloud APIs
+
+Set three env vars and you're done:
+
+| Provider | `LLM_BASE_URL` | `LLM_MODEL` | Notes |
+|----------|-----------------|-------------|-------|
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o` | |
+| Anthropic | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` | |
+| OpenRouter | `https://openrouter.ai/api/v1` | `openai/gpt-4o` | Aggregator — any model |
+
+### Local Models (vLLM, Ollama, LiteLLM)
+
+```env
+LLM_BASE_URL=http://10.0.0.5:8000/v1
+LLM_MODEL=Qwen3.5-122B-A10B
+LLM_API_KEY=none
+LLM_CONTEXT_WINDOW=262144
+LLM_MAX_TOKENS=8192
+```
+
+## Bot Templates
+
+Templates live in `bot-template/`. Each is a directory containing:
+
+- `openclaw.template.json` — OpenClaw config with `{{ENV_VAR}}` placeholders
+- `SOUL.md` — Bot personality
+
+The `default` template works with any OpenAI-compatible API. Create new templates by copying `default/` and editing. Templates appear in the dashboard's create-bot dropdown.
+
+Example: an OpenAI-native template only needs an API key — no base URL or model list:
+
+```json
+{
+  "models": {
+    "providers": {
+      "openai": { "apiKey": "{{OPENAI_API_KEY}}" }
+    }
+  },
+  "agents": {
+    "defaults": { "model": "openai/gpt-4o" }
+  }
+}
+```
+
+## Features
+
+- **Real-time dashboard** — health status, token usage, memory, CPU per bot
+- **Per-bot isolation** — each bot gets its own Docker container and bridge network
+- **Backup/rollback** — compressed archives with configurable retention
+- **Multi-user auth** — session-based with per-bot RBAC
+- **SOUL.md personalities** — each bot has its own character
+- **Multiple templates** — different LLM configs for different use cases
+- **Single HTTPS port** — Caddy reverse proxy with path-based routing
+- **Duplicate/fork** — clone bots with full workspace and memories
+
+## Configuration
+
+All configuration is via environment variables in `.env`. See `.env.example` for the full list with documentation.
+
+Key variables:
+
+| Variable | Description |
+|----------|-------------|
+| `LLM_BASE_URL` | LLM API endpoint |
+| `LLM_MODEL` | Model name |
+| `LLM_API_KEY` | API key |
+| `TLS_MODE` | TLS mode: `internal` (default), `acme`, `custom`, `off` |
+| `DOMAIN` | Public domain (for `acme` mode) |
+| `CADDY_PORT` | Listening port (default: 8443) |
+| `PORTAL_URL` | External base URL override (auto-derived in most modes) |
+| `BRAVE_API_KEY` | Brave Search API key for agent web search |
+| `BACKUP_INTERVAL_SECONDS` | Scheduled backup interval (default: 3600, 0 = disabled) |
+| `AUTH_DISABLED` | Set to `1` to skip authentication |
 
 ## Architecture
 
 ```
-┌──────────────────────────────┐
-│  Frontend (Next.js :3000)    │  ← public entry point
-│  - Dashboard UI              │
-│  - Bot detail + metrics      │
-│  - Proxies /api/* to backend │
-└──────────┬───────────────────┘
-           │ HTTP proxy
-┌──────────▼───────────────────┐
-│  Backend (FastAPI :8080)     │  ← internal only
-│  - Bot lifecycle API         │
-│  - Metrics, backup, rollback │
-│  - Mounts Docker socket      │
-└──────────┬───────────────────┘
-           │ Docker API
-    ┌──────┼──────┬──────────┐
-    ▼      ▼      ▼          ▼
-  Bot A  Bot B  Bot C  ... Bot N
-  :3001  :3002  :3003     :30xx
-  (each on its own bridge network)
+Browser → Caddy (TLS + auth) → Dashboard (FastAPI) → Bot containers (OpenClaw)
+                               ↕
+                          Docker socket
 ```
 
-## Quick Start
+- **Caddy** — TLS termination, path-based routing, forward_auth
+- **Dashboard** — FastAPI backend managing bot lifecycle via Docker API
+- **Frontend** — Next.js dashboard UI
+- **Bot containers** — OpenClaw instances, one per agent, isolated networks
 
-1. Create your environment file:
-
-```bash
-cp .env.example .env
-# Edit .env with your LLM server details
-```
-
-2. Run the init script:
-
-```bash
-bash scripts/init.sh
-```
-
-3. Open `http://localhost:3000` in your browser.
-
-## Environment Variables
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `LLM_HOST` | LLM server IP (for network isolation rules) | `10.88.100.186` |
-| `LLM_PORT` | LLM server port (for network isolation rules) | `8000` |
-| `LLM_BASE_URL` | Full LLM API base URL injected into bot configs | `http://10.88.100.186:8000/v1` |
-| `LLM_MODEL` | Model name injected into bot configs | `qwen3.5-122b` |
-| `BOT_PORT_START` | Start of bot port range | `3001` |
-| `BOT_PORT_END` | End of bot port range | `3100` |
-| `DASHBOARD_PORT` | Frontend port (default 3000) | `3000` |
-| `OPENCLAW_IMAGE` | Docker image for bot containers | `ghcr.io/openclaw/openclaw:latest` |
-
-## Bot Operations
-
-| Operation | Description |
-|-----------|-------------|
-| **Create** | New bot from template with auto-allocated port |
-| **Duplicate** | Copy a bot's actual config + soul to a new bot |
-| **Fork** | Duplicate with lineage tracking (forked_from metadata) |
-| **Backup** | Snapshot current config + soul to timestamped backup |
-| **Rollback** | Restore from backup (auto-backs up current state first) |
-| **Start/Stop/Restart** | Container lifecycle control |
-| **Delete** | Remove container, network, and config directory |
+All services run as Docker containers via `docker-compose.yml`. Bot data persists on the host filesystem under `bots/`.
 
 ## Network Isolation
 
-Each bot runs on its own Docker bridge network. The `network/setup-isolation.sh` script applies iptables rules on the `DOCKER-USER` chain:
+Each bot runs on its own Docker bridge network. The `network/setup-isolation.sh` script applies iptables rules so bots can reach the internet and the LLM server, but cannot access the LAN or each other.
 
-1. **ACCEPT** established/related connections
-2. **ACCEPT** traffic to the configured LLM server (`LLM_HOST:LLM_PORT`)
-3. **ACCEPT** incoming connections to container service ports (8080 API, 3000 bot UIs) — allows LAN access
-4. **DROP** all RFC1918 private network destinations (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
-5. **RETURN** — allows internet access for everything else
-
-Bots can reach the internet and the LLM server, but cannot access the LAN or each other.
-
-## API Endpoints
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/api/bots` | List all bots with status, port, metadata |
-| `POST` | `/api/bots` | Create a bot (`{name, soul?, extra_config?}`) |
-| `POST` | `/api/bots/{name}/start` | Start a stopped bot |
-| `POST` | `/api/bots/{name}/stop` | Stop a running bot |
-| `POST` | `/api/bots/{name}/restart` | Restart a bot |
-| `DELETE` | `/api/bots/{name}` | Remove bot container, network, and config |
-| `GET` | `/api/bots/{name}/logs` | Last 200 lines of container logs |
-| `POST` | `/api/bots/{name}/duplicate` | Duplicate bot (`{new_name}`) |
-| `POST` | `/api/bots/{name}/fork` | Fork with lineage (`{new_name}`) |
-| `POST` | `/api/bots/{name}/backup` | Create backup snapshot |
-| `GET` | `/api/bots/{name}/backups` | List backup history |
-| `POST` | `/api/bots/{name}/rollback` | Rollback to backup (`{timestamp}`) |
-| `GET` | `/api/bots/{name}/meta` | Get bot metadata |
-| `GET` | `/api/bots/{name}/stats` | Live container metrics |
-| `GET` | `/api/bots/{name}/detail` | Full detail (config, soul, meta, stats) |
-
-## Running Tests
+## Development
 
 ```bash
-cd dashboard
-uv run pytest -v
+# Backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r dashboard/requirements.txt
+cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
+
+# Frontend (separate terminal)
+cd frontend && npm install && npm run dev
+
+# Tests
+cd dashboard && python -m pytest tests/test_fleet.py -v
 ```

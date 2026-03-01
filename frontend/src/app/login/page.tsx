@@ -44,7 +44,7 @@ export default function LoginPage() {
           <div className="mx-auto mb-2 h-10 w-10 rounded-lg bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center">
             <span className="text-emerald-400 text-lg font-bold">C</span>
           </div>
-          <CardTitle className="text-lg">ClawFleetManager</CardTitle>
+          <CardTitle className="text-lg">ClawFarm</CardTitle>
           <p className="text-xs text-muted-foreground">Sign in to manage your fleet</p>
         </CardHeader>
         <CardContent>

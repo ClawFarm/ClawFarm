@@ -3,8 +3,6 @@ services:
     build:
       context: ./dashboard
       network: host
-    group_add:
-      - "${DOCKER_GID:-988}"
     expose:
       - "8080"
     volumes:
@@ -40,7 +38,7 @@ services:
   caddy:
     image: caddy:2.8-alpine
     ports:
-      - "${CADDY_PORT:-8443}:8443"
+      - "${CADDY_PORT:-8443}:${CADDY_PORT:-8443}"
       - "80:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile

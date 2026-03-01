@@ -10,6 +10,7 @@ import pytest
 from app import (
     SESSIONS,
     _bootstrap_admin,
+    _build_tls_config,
     _check_login_rate,
     _cleanup_expired_sessions,
     _create_session,
@@ -21,6 +22,8 @@ from app import (
     _login_attempts,
     _login_lock,
     _record_failed_login,
+    _redact_config,
+    _resolve_template,
     _save_users,
     _user_can_access_bot,
     _verify_password,
@@ -38,6 +41,7 @@ from app import (
     get_bot_token_usage,
     get_fleet_stats,
     list_backups,
+    list_templates,
     prune_scheduled_backups,
     read_meta,
     rollback_to_backup,
@@ -58,18 +62,38 @@ def bot_env(monkeypatch, tmp_path):
     bots_dir = tmp_path / "bots"
     bots_dir.mkdir()
 
-    template = {
-        "gateway": {"port": 3000},
-        "llm": {"provider": "", "baseUrl": "", "model": ""},
-        "compaction": {"enabled": True, "maxMessages": 50},
+    # New template structure: template_dir/default/openclaw.template.json
+    default_tmpl = template_dir / "default"
+    default_tmpl.mkdir()
+    oc_template = {
+        "models": {
+            "mode": "merge",
+            "providers": {
+                "default": {
+                    "baseUrl": "{{LLM_BASE_URL}}",
+                    "apiKey": "{{LLM_API_KEY}}",
+                    "api": "openai-completions",
+                    "models": [{
+                        "id": "{{LLM_MODEL}}",
+                        "name": "{{LLM_MODEL}}",
+                        "contextWindow": 128000,
+                        "maxTokens": 8192,
+                    }],
+                }
+            },
+        },
+        "agents": {"defaults": {"model": "default/{{LLM_MODEL}}"}},
     }
-    (template_dir / "config.template.json").write_text(json.dumps(template))
-    (template_dir / "SOUL.md").write_text("default soul")
+    (default_tmpl / "openclaw.template.json").write_text(json.dumps(oc_template))
+    (default_tmpl / "SOUL.md").write_text("default soul")
 
     monkeypatch.setattr("app.TEMPLATE_DIR", template_dir)
     monkeypatch.setattr("app.BOTS_DIR", bots_dir)
     monkeypatch.setenv("LLM_BASE_URL", "http://10.0.0.1:8000/v1")
     monkeypatch.setenv("LLM_MODEL", "test-model")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_CONTEXT_WINDOW", "128000")
+    monkeypatch.setenv("LLM_MAX_TOKENS", "8192")
 
     return {"template_dir": template_dir, "bots_dir": bots_dir}
 
@@ -137,10 +161,12 @@ class TestDeepMerge:
 # Config Generation + File Writing (tests 9–13)
 # ===========================================================================
 class TestConfigGeneration:
-    def test_llm_fields_populated(self, bot_env):
+    def test_template_resolved_with_env_vars(self, bot_env):
         config = generate_config("test")
-        assert config["llm"]["baseUrl"] == "http://10.0.0.1:8000/v1"
-        assert config["llm"]["model"] == "test-model"
+        provider = config["models"]["providers"]["default"]
+        assert provider["baseUrl"] == "http://10.0.0.1:8000/v1"
+        assert provider["apiKey"] == "test-key"
+        assert config["agents"]["defaults"]["model"] == "default/test-model"
 
     def test_soul_written_to_workspace(self, bot_env):
         config = generate_config("mybot")
@@ -156,9 +182,10 @@ class TestConfigGeneration:
         assert soul_path.read_text() == "default soul"
 
     def test_extra_config_merges(self, bot_env):
-        config = generate_config("mybot", extra_config={"compaction": {"maxMessages": 100}})
-        assert config["compaction"]["maxMessages"] == 100
-        assert config["compaction"]["enabled"] is True
+        config = generate_config("mybot", extra_config={"agents": {"defaults": {"model": "custom/model"}}})
+        assert config["agents"]["defaults"]["model"] == "custom/model"
+        # Original field preserved
+        assert config["models"]["mode"] == "merge"
 
     def test_workspace_dir_created(self, bot_env):
         config = generate_config("newbot")
@@ -1188,7 +1215,8 @@ class TestUserBootstrap:
         users = _load_users()
         assert "admin" in users
         output = capsys.readouterr().out
-        assert "Generated admin password" in output
+        assert "Password:" in output
+        assert "Save this" in output
 
 
 # ===========================================================================
@@ -1527,3 +1555,193 @@ class TestCreateBotNameCollision:
         monkeypatch.setattr("app._get_client", lambda: MagicMock())
         with pytest.raises(ValueError, match="already exists"):
             create_bot("existing-bot")
+
+
+# ===========================================================================
+# Template system
+# ===========================================================================
+class TestResolveTemplate:
+    def test_basic_substitution(self, monkeypatch):
+        monkeypatch.setenv("MY_VAR", "hello")
+        assert _resolve_template("value: {{MY_VAR}}") == "value: hello"
+
+    def test_unset_var_kept(self, monkeypatch):
+        monkeypatch.delenv("NONEXISTENT_VAR", raising=False)
+        assert _resolve_template("{{NONEXISTENT_VAR}}") == "{{NONEXISTENT_VAR}}"
+
+    def test_multiple_vars(self, monkeypatch):
+        monkeypatch.setenv("A", "1")
+        monkeypatch.setenv("B", "2")
+        assert _resolve_template("{{A}} and {{B}}") == "1 and 2"
+
+    def test_numeric_unquoted(self, monkeypatch):
+        monkeypatch.setenv("NUM", "42")
+        result = _resolve_template('{"val": {{NUM}}}')
+        parsed = json.loads(result)
+        assert parsed["val"] == 42
+
+
+class TestListTemplates:
+    def test_lists_default_template(self, bot_env):
+        templates = list_templates()
+        names = [t["name"] for t in templates]
+        assert "default" in names
+
+    def test_lists_multiple_templates(self, bot_env):
+        # Add a second template
+        custom = bot_env["template_dir"] / "custom"
+        custom.mkdir()
+        (custom / "openclaw.template.json").write_text("{}")
+        (custom / "SOUL.md").write_text("I am custom")
+        templates = list_templates()
+        names = [t["name"] for t in templates]
+        assert "default" in names
+        assert "custom" in names
+
+    def test_soul_preview(self, bot_env):
+        templates = list_templates()
+        default = next(t for t in templates if t["name"] == "default")
+        assert default["soul_preview"] == "default soul"
+
+    def test_hidden_dirs_excluded(self, bot_env):
+        (bot_env["template_dir"] / ".hidden").mkdir()
+        templates = list_templates()
+        names = [t["name"] for t in templates]
+        assert ".hidden" not in names
+
+
+class TestTemplateInCreateFlow:
+    def test_generate_config_with_named_template(self, bot_env):
+        # Create a custom template
+        custom = bot_env["template_dir"] / "custom"
+        custom.mkdir()
+        custom_tmpl = {"models": {"providers": {"openai": {"apiKey": "{{OPENAI_API_KEY}}"}}}}
+        (custom / "openclaw.template.json").write_text(json.dumps(custom_tmpl))
+        (custom / "SOUL.md").write_text("custom soul")
+
+        import os
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        try:
+            config = generate_config("test", template="custom")
+            assert config["models"]["providers"]["openai"]["apiKey"] == "sk-test"
+        finally:
+            del os.environ["OPENAI_API_KEY"]
+
+    def test_fallback_to_default_on_missing_template(self, bot_env):
+        config = generate_config("test", template="nonexistent")
+        # Should fall back to default template
+        assert "models" in config
+        assert "default" in config["models"]["providers"]
+
+    def test_template_soul_used_when_no_custom_soul(self, bot_env):
+        custom = bot_env["template_dir"] / "custom"
+        custom.mkdir()
+        (custom / "openclaw.template.json").write_text("{}")
+        (custom / "SOUL.md").write_text("custom soul here")
+
+        config = generate_config("mybot", template="custom")
+        write_bot_files("mybot", config, soul="", template="custom")
+        soul_path = bot_env["bots_dir"] / "mybot" / "SOUL.md"
+        assert soul_path.read_text() == "custom soul here"
+
+
+class TestRedactConfig:
+    def test_redacts_api_keys(self):
+        config = {
+            "models": {"providers": {"default": {"apiKey": "secret123", "baseUrl": "http://x"}}},
+            "tools": {"web": {"search": {"provider": "brave", "apiKey": "brave-secret"}}},
+        }
+        redacted = _redact_config(config)
+        assert redacted["models"]["providers"]["default"]["apiKey"] == "***"
+        assert redacted["tools"]["web"]["search"]["apiKey"] == "***"
+        # Original not mutated
+        assert config["models"]["providers"]["default"]["apiKey"] == "secret123"
+
+    def test_redacts_gateway_token(self):
+        config = {"gateway": {"auth": {"token": "super-secret"}}}
+        redacted = _redact_config(config)
+        assert redacted["gateway"]["auth"]["token"] == "***"
+
+
+# ===========================================================================
+# TLS Mode Config
+# ===========================================================================
+
+class TestBuildTlsConfig:
+    """Tests for _build_tls_config() TLS mode selection."""
+
+    def test_internal_mode_default(self, monkeypatch):
+        """Internal mode (default): Caddy auto-generates self-signed cert."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        policies, tls_app, scheme = _build_tls_config()
+        assert policies == []
+        assert scheme == "https"
+        assert "automation" in tls_app
+        issuers = tls_app["automation"]["policies"][0]["issuers"]
+        assert issuers[0]["module"] == "internal"
+
+    def test_custom_mode(self, monkeypatch):
+        """Custom mode: load user-provided cert files."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "custom")
+        policies, tls_app, scheme = _build_tls_config()
+        assert len(policies) == 1
+        assert policies[0]["certificate_selection"]["any_tag"] == ["cert0"]
+        assert scheme == "https"
+        load_files = tls_app["certificates"]["load_files"]
+        assert load_files[0]["certificate"] == "/certs/cert.pem"
+        assert load_files[0]["key"] == "/certs/key.pem"
+        assert load_files[0]["tags"] == ["cert0"]
+
+    def test_off_mode(self, monkeypatch):
+        """Off mode: no TLS, plain HTTP."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "off")
+        policies, tls_app, scheme = _build_tls_config()
+        assert policies == []
+        assert tls_app == {}
+        assert scheme == "http"
+
+    def test_acme_mode_with_domain(self, monkeypatch):
+        """ACME mode: Let's Encrypt with domain."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "acme")
+        monkeypatch.setattr(app, "DOMAIN", "farm.example.com")
+        monkeypatch.setenv("ACME_EMAIL", "admin@example.com")
+        policies, tls_app, scheme = _build_tls_config()
+        assert policies == []
+        assert scheme == "https"
+        policy = tls_app["automation"]["policies"][0]
+        assert policy["subjects"] == ["farm.example.com"]
+        assert policy["issuers"][0]["module"] == "acme"
+        assert policy["issuers"][0]["email"] == "admin@example.com"
+
+    def test_acme_mode_without_email(self, monkeypatch):
+        """ACME mode without email: no email in issuer config."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "acme")
+        monkeypatch.setattr(app, "DOMAIN", "farm.example.com")
+        monkeypatch.delenv("ACME_EMAIL", raising=False)
+        policies, tls_app, scheme = _build_tls_config()
+        issuer = tls_app["automation"]["policies"][0]["issuers"][0]
+        assert issuer == {"module": "acme"}
+
+    def test_acme_mode_without_domain(self, monkeypatch):
+        """ACME mode without domain: no subjects in policy."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "acme")
+        monkeypatch.setattr(app, "DOMAIN", "")
+        monkeypatch.delenv("ACME_EMAIL", raising=False)
+        policies, tls_app, scheme = _build_tls_config()
+        policy = tls_app["automation"]["policies"][0]
+        assert "subjects" not in policy
+
+    def test_unknown_mode_defaults_to_internal(self, monkeypatch):
+        """Unknown TLS_MODE values fall back to internal."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "bogus")
+        policies, tls_app, scheme = _build_tls_config()
+        assert scheme == "https"
+        issuers = tls_app["automation"]["policies"][0]["issuers"]
+        assert issuers[0]["module"] == "internal"

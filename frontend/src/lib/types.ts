@@ -85,10 +85,16 @@ export interface FleetStats {
   total_tokens_used: number;
 }
 
+export interface Template {
+  name: string;
+  soul_preview: string;
+}
+
 export interface CreateBotRequest {
   name: string;
   soul?: string;
   extra_config?: Record<string, unknown>;
+  template?: string;
 }
 
 export interface User {

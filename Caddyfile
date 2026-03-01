@@ -1,11 +1,12 @@
 # Initial Caddyfile — overwritten dynamically by the dashboard via Caddy admin API.
-# This static config is used on first startup before any bots are created.
+# This static config is used on first startup before the dashboard pushes its config.
+# Uses Caddy's internal CA (auto-generated self-signed cert) so no cert files are needed.
 {
 	admin :2019
 }
 
 :8443 {
-	tls /certs/cert.pem /certs/key.pem
+	tls internal
 
 	handle /api/* {
 		reverse_proxy dashboard:8080

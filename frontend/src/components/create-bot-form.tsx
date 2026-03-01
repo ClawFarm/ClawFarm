@@ -1,17 +1,35 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import type { Template } from "@/lib/types";
 
 export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
   const [name, setName] = useState("");
   const [soul, setSoul] = useState("");
+  const [template, setTemplate] = useState("default");
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [soulCustomized, setSoulCustomized] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      api.listTemplates().then(setTemplates).catch(() => {});
+    }
+  }, [open]);
+
+  function handleTemplateChange(name: string) {
+    setTemplate(name);
+    if (!soulCustomized) {
+      const t = templates.find((t) => t.name === name);
+      if (t?.soul_preview) setSoul(t.soul_preview);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -19,9 +37,11 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
     setLoading(true);
     setError("");
     try {
-      await api.createBot({ name, soul: soul || undefined });
+      await api.createBot({ name, soul: soul || undefined, template });
       setName("");
       setSoul("");
+      setTemplate("default");
+      setSoulCustomized(false);
       setOpen(false);
       onCreated();
     } catch (err) {
@@ -54,10 +74,26 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
             onChange={(e) => setName(e.target.value)}
             autoFocus
           />
+          {templates.length > 1 && (
+            <select
+              value={template}
+              onChange={(e) => handleTemplateChange(e.target.value)}
+              className="w-full rounded-md border border-border bg-secondary px-3 py-2 text-sm text-foreground"
+            >
+              {templates.map((t) => (
+                <option key={t.name} value={t.name}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          )}
           <Textarea
             placeholder="SOUL.md — custom personality (optional)"
             value={soul}
-            onChange={(e) => setSoul(e.target.value)}
+            onChange={(e) => {
+              setSoul(e.target.value);
+              setSoulCustomized(true);
+            }}
             rows={3}
           />
           {error && <p className="text-sm text-destructive">{error}</p>}

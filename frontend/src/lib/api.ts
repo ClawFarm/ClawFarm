@@ -1,4 +1,4 @@
-import type { Bot, BotDetail, BotStats, Backup, CreateBotRequest, FleetStats, User } from "./types";
+import type { Bot, BotDetail, BotStats, Backup, CreateBotRequest, FleetStats, Template, User } from "./types";
 
 const API_BASE = "/api";
 
@@ -54,6 +54,7 @@ export const api = {
 
   // Config & fleet
   getConfig: () => request<PortalConfig>("/config"),
+  listTemplates: () => request<Template[]>("/templates"),
   getFleetStats: () => request<FleetStats>("/fleet/stats"),
   listBots: () => request<Bot[]>("/bots"),
   createBot: (data: CreateBotRequest) =>

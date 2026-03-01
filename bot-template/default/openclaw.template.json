@@ -1,0 +1,35 @@
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "default": {
+        "baseUrl": "{{LLM_BASE_URL}}",
+        "apiKey": "{{LLM_API_KEY}}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "{{LLM_MODEL}}",
+            "name": "{{LLM_MODEL}}",
+            "reasoning": false,
+            "input": ["text", "image"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": {{LLM_CONTEXT_WINDOW}},
+            "maxTokens": {{LLM_MAX_TOKENS}}
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "default/{{LLM_MODEL}}",
+      "compaction": {"mode": "safeguard"}
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  }
+}

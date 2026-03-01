@@ -23,6 +23,10 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+# Ensure numeric template vars have defaults (unquoted in templates → must resolve)
+os.environ.setdefault("LLM_CONTEXT_WINDOW", "128000")
+os.environ.setdefault("LLM_MAX_TOKENS", "8192")
+
 # ---------------------------------------------------------------------------
 # Path constants (overridable via env for Docker mount paths)
 # ---------------------------------------------------------------------------
@@ -96,16 +100,29 @@ def _bootstrap_admin() -> None:
     if users:
         return
     password = os.environ.get("ADMIN_PASSWORD", "")
+    generated = False
     if not password:
         password = secrets.token_urlsafe(16)
-        print(f"[AUTH] Generated admin password for '{ADMIN_USER}': {password}")
+        generated = True
     users[ADMIN_USER] = {
         "password_hash": _hash_password(password),
         "role": "admin",
         "bots": ["*"],
     }
     _save_users(users)
-    print(f"[AUTH] Created admin user: {ADMIN_USER}")
+    if generated:
+        print("")
+        print("\u2554" + "\u2550" * 50 + "\u2557")
+        print("\u2551  ClawFarm — First Run Setup" + " " * 22 + "\u2551")
+        print("\u2551" + " " * 50 + "\u2551")
+        print(f"\u2551  Admin user:  {ADMIN_USER:<36}\u2551")
+        print(f"\u2551  Password:    {password:<36}\u2551")
+        print("\u2551" + " " * 50 + "\u2551")
+        print("\u2551  Save this \u2014 it won't be shown again." + " " * 12 + "\u2551")
+        print("\u255a" + "\u2550" * 50 + "\u255d")
+        print("")
+    else:
+        print(f"[AUTH] Created admin user: {ADMIN_USER}")
 
 
 def _create_session(username: str) -> str:
@@ -260,6 +277,29 @@ def deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = copy.deepcopy(value)
     return result
+
+
+def _resolve_template(template_text: str) -> str:
+    """Replace {{VAR_NAME}} placeholders with env var values."""
+    def replacer(match):
+        var_name = match.group(1)
+        value = os.environ.get(var_name, "")
+        return value if value else match.group(0)  # Keep placeholder if unset
+    return re.sub(r"\{\{(\w+)\}\}", replacer, template_text)
+
+
+def list_templates() -> list[dict]:
+    """List available bot templates."""
+    templates = []
+    for d in sorted(TEMPLATE_DIR.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        soul_path = d / "SOUL.md"
+        soul_preview = ""
+        if soul_path.exists():
+            soul_preview = soul_path.read_text()[:200]
+        templates.append({"name": d.name, "soul_preview": soul_preview})
+    return templates
 
 
 def _now_iso() -> str:
@@ -544,15 +584,15 @@ def allocate_port() -> int:
 # ---------------------------------------------------------------------------
 # Config generation & file writing
 # ---------------------------------------------------------------------------
-def generate_config(name: str, extra_config: dict | None = None) -> dict:
-    """Load template, inject LLM settings, deep-merge extra_config."""
-    template_path = TEMPLATE_DIR / "config.template.json"
-    with open(template_path) as f:
-        config = json.load(f)
-
-    config["llm"]["provider"] = "openai-compatible"
-    config["llm"]["baseUrl"] = os.environ.get("LLM_BASE_URL", "")
-    config["llm"]["model"] = os.environ.get("LLM_MODEL", "")
+def generate_config(name: str, extra_config: dict | None = None,
+                    template: str = "default") -> dict:
+    """Load and resolve an OpenClaw template, deep-merge extra_config."""
+    tmpl_path = TEMPLATE_DIR / template / "openclaw.template.json"
+    if not tmpl_path.exists():
+        tmpl_path = TEMPLATE_DIR / "default" / "openclaw.template.json"
+    raw = tmpl_path.read_text()
+    resolved = _resolve_template(raw)
+    config = json.loads(resolved)
 
     if extra_config:
         config = deep_merge(config, extra_config)
@@ -561,7 +601,8 @@ def generate_config(name: str, extra_config: dict | None = None) -> dict:
 
 
 def write_bot_files(name: str, config: dict, soul: str | None = None,
-                    forked_from: str | None = None, created_by: str | None = None) -> Path:
+                    forked_from: str | None = None, created_by: str | None = None,
+                    template: str = "default") -> Path:
     """Create bots/{name}/, write config.json + SOUL.md + .meta.json. Returns bot dir."""
     bot_dir = BOTS_DIR / name
     bot_dir.mkdir(parents=True, exist_ok=True)
@@ -572,8 +613,13 @@ def write_bot_files(name: str, config: dict, soul: str | None = None,
     if soul and soul.strip():
         soul_text = soul
     else:
-        default_soul = TEMPLATE_DIR / "SOUL.md"
-        soul_text = default_soul.read_text() if default_soul.exists() else ""
+        # Look for SOUL.md in the template directory first, then fall back
+        tmpl_soul = TEMPLATE_DIR / template / "SOUL.md"
+        if tmpl_soul.exists():
+            soul_text = tmpl_soul.read_text()
+        else:
+            default_soul = TEMPLATE_DIR / "default" / "SOUL.md"
+            soul_text = default_soul.read_text() if default_soul.exists() else ""
 
     with open(bot_dir / "SOUL.md", "w") as f:
         f.write(soul_text)
@@ -595,12 +641,15 @@ def write_bot_files(name: str, config: dict, soul: str | None = None,
 # Container launcher (shared by create, duplicate, fork)
 # ---------------------------------------------------------------------------
 def _prepare_openclaw_home(bot_dir: Path, soul_text: str, trusted_proxies: list[str] | None = None,
-                           bot_name: str | None = None) -> Path:
+                           bot_name: str | None = None, template_name: str = "default") -> Path:
     """Create .openclaw/ config dir for a bot so it's usable from the start.
 
     If a workspace already exists (e.g. copied from a source bot during
     duplicate/fork), its files are preserved — only SOUL.md is written
     if it doesn't already exist in the workspace.
+
+    If openclaw.json already exists (duplicate/fork), it is used as the base
+    config instead of the template — only ClawFarm-managed fields are re-applied.
     """
     oc_dir = bot_dir / ".openclaw"
     oc_dir.mkdir(exist_ok=True)
@@ -617,61 +666,46 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str, trusted_proxies: list[
     ws_memory_dir = ws / "memory"
     ws_memory_dir.mkdir(exist_ok=True)
 
-    # Gateway config: register local model provider, set as default
-    llm_model = os.environ.get("LLM_MODEL", "Qwen3.5-122B-A10B")
-    llm_api_key = os.environ.get("LLM_API_KEY", "none")
-    llm_base_url = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
-    brave_api_key = os.environ.get("BRAVE_API_KEY", "")
+    # Load base config: existing openclaw.json (duplicate/fork) or template
+    existing_oc = oc_dir / "openclaw.json"
+    if existing_oc.exists():
+        try:
+            oc_config = json.loads(existing_oc.read_text())
+        except (json.JSONDecodeError, OSError):
+            oc_config = {}
+    else:
+        tmpl_path = TEMPLATE_DIR / template_name / "openclaw.template.json"
+        if not tmpl_path.exists():
+            tmpl_path = TEMPLATE_DIR / "default" / "openclaw.template.json"
+        if tmpl_path.exists():
+            raw = tmpl_path.read_text()
+            resolved = _resolve_template(raw)
+            oc_config = json.loads(resolved)
+        else:
+            oc_config = {}
 
-    oc_config = {
-        "models": {
-            "mode": "merge",
-            "providers": {
-                "local": {
-                    "baseUrl": llm_base_url,
-                    "apiKey": llm_api_key,
-                    "api": "openai-completions",
-                    "models": [
-                        {
-                            "id": llm_model,
-                            "name": llm_model,
-                            "reasoning": False,
-                            "input": ["text", "image"],
-                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                            "contextWindow": 262144,
-                            "maxTokens": 8192,
-                        }
-                    ],
-                }
-            },
-        },
-        "agents": {
-            "defaults": {
-                "model": f"local/{llm_model}",
-                "compaction": {"mode": "safeguard"},
-            }
-        },
-        "commands": {
-            "native": "auto",
-            "nativeSkills": "auto",
-            "restart": True,
-            "ownerDisplay": "raw",
-        },
+    # Deep-merge ClawFarm-managed fields on top
+    in_compose = bool(os.environ.get("HOST_BOTS_DIR"))
+    managed: dict = {
         "gateway": {
-            "auth": {
-                "mode": "trusted-proxy",
-                "trustedProxy": {
-                    "userHeader": "X-Forwarded-User",
-                },
-            },
             "controlUi": {
                 "dangerouslyAllowHostHeaderOriginFallback": True,
             },
             "trustedProxies": trusted_proxies or ["127.0.0.1"],
         },
-        **({"tools": {"web": {"search": {"provider": "brave", "apiKey": brave_api_key}}}}
-           if brave_api_key else {}),
     }
+    if in_compose:
+        managed["gateway"]["auth"] = {
+            "mode": "trusted-proxy",
+            "trustedProxy": {"userHeader": "X-Forwarded-User"},
+        }
+
+    brave_api_key = os.environ.get("BRAVE_API_KEY", "")
+    if brave_api_key:
+        managed["tools"] = {"web": {"search": {"provider": "brave", "apiKey": brave_api_key}}}
+
+    oc_config = deep_merge(oc_config, managed)
+
     with open(oc_dir / "openclaw.json", "w") as f:
         json.dump(oc_config, f, indent=2)
 
@@ -721,7 +755,7 @@ def _effective_status(container) -> str:
     return "running"
 
 
-def _launch_container(name: str, bot_dir: Path) -> dict:
+def _launch_container(name: str, bot_dir: Path, template: str = "default") -> dict:
     """Allocate port, create network, start container. Returns bot info."""
     port = allocate_port()
     client = _get_client()
@@ -750,7 +784,7 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
     soul_path = bot_dir / "SOUL.md"
     soul_text = soul_path.read_text() if soul_path.exists() else ""
     oc_dir = _prepare_openclaw_home(bot_dir, soul_text, trusted_proxies=trusted_proxies,
-                                    bot_name=name)
+                                    bot_name=name, template_name=template)
 
     container = client.containers.run(
         image,
@@ -797,14 +831,14 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
 # Bot lifecycle
 # ---------------------------------------------------------------------------
 def create_bot(name: str, soul: str | None = None, extra_config: dict | None = None,
-               created_by: str | None = None) -> dict:
+               created_by: str | None = None, template: str = "default") -> dict:
     """Full orchestration: sanitize, gen config, write files, launch container."""
     name = sanitize_name(name)
     if (BOTS_DIR / name).exists():
         raise ValueError(f"Bot already exists: {name!r}")
-    config = generate_config(name, extra_config)
-    bot_dir = write_bot_files(name, config, soul, created_by=created_by)
-    return _launch_container(name, bot_dir)
+    config = generate_config(name, extra_config, template=template)
+    bot_dir = write_bot_files(name, config, soul, created_by=created_by, template=template)
+    return _launch_container(name, bot_dir, template=template)
 
 
 def _copy_workspace(src_dir: Path, dst_dir: Path) -> None:
@@ -1120,15 +1154,42 @@ def get_fleet_stats() -> dict:
     }
 
 
+def _redact_config(config: dict) -> dict:
+    """Deep-copy config and replace API keys with '***'."""
+    display = copy.deepcopy(config)
+    for provider in display.get("models", {}).get("providers", {}).values():
+        if isinstance(provider, dict) and "apiKey" in provider:
+            provider["apiKey"] = "***"
+    tools = display.get("tools", {})
+    if isinstance(tools, dict):
+        for tool_cat in tools.values():
+            if isinstance(tool_cat, dict):
+                for tool in tool_cat.values():
+                    if isinstance(tool, dict) and "apiKey" in tool:
+                        tool["apiKey"] = "***"
+    gw_auth = display.get("gateway", {}).get("auth", {})
+    if isinstance(gw_auth, dict) and "token" in gw_auth:
+        gw_auth["token"] = "***"
+    return display
+
+
 def get_bot_detail(name: str) -> dict:
     """Full bot info: config content, soul content, metadata, stats."""
     name = sanitize_name(name)
     bot_dir = BOTS_DIR / name
 
+    # Prefer openclaw.json (the real config) over dead config.json
     config = {}
-    soul = ""
-    if (bot_dir / "config.json").exists():
+    oc_json_path = bot_dir / ".openclaw" / "openclaw.json"
+    if oc_json_path.exists():
+        try:
+            config = _redact_config(json.loads(oc_json_path.read_text()))
+        except (json.JSONDecodeError, OSError):
+            pass
+    if not config and (bot_dir / "config.json").exists():
         config = json.loads((bot_dir / "config.json").read_text())
+
+    soul = ""
     if (bot_dir / "SOUL.md").exists():
         soul = (bot_dir / "SOUL.md").read_text()
 
@@ -1217,19 +1278,60 @@ def _disconnect_caddy_from_network(client, network_name: str) -> None:
 # Caddy reverse proxy sync
 # ---------------------------------------------------------------------------
 CADDY_ADMIN_URL = os.environ.get("CADDY_ADMIN_URL", "http://caddy:2019")
+TLS_MODE = os.environ.get("TLS_MODE", "internal").lower()  # internal, acme, custom, off
+DOMAIN = os.environ.get("DOMAIN", "")  # Required for acme mode
 PORTAL_URL = os.environ.get("PORTAL_URL", "")  # e.g. "https://10.88.142.100"
+
+# Auto-derive PORTAL_URL in acme mode
+if not PORTAL_URL and TLS_MODE == "acme" and DOMAIN:
+    PORTAL_URL = f"https://{DOMAIN}"
+
+
+def _build_tls_config() -> tuple[list, dict, str]:
+    """Build TLS connection policies, TLS app config, and scheme based on TLS_MODE.
+
+    Returns (tls_connection_policies, tls_app_config, scheme).
+    """
+    if TLS_MODE == "off":
+        return [], {}, "http"
+    elif TLS_MODE == "acme":
+        email = os.environ.get("ACME_EMAIL", "")
+        issuer = {"module": "acme"}
+        if email:
+            issuer["email"] = email
+        policy = {"issuers": [issuer]}
+        if DOMAIN:
+            policy["subjects"] = [DOMAIN]
+        return [], {"automation": {"policies": [policy]}}, "https"
+    elif TLS_MODE == "custom":
+        return (
+            [{"certificate_selection": {"any_tag": ["cert0"]}}],
+            {"certificates": {"load_files": [{
+                "certificate": "/certs/cert.pem",
+                "key": "/certs/key.pem",
+                "tags": ["cert0"],
+            }]}},
+            "https",
+        )
+    else:  # "internal" — default
+        return [], {"automation": {"policies": [{"issuers": [{"module": "internal"}]}]}}, "https"
 
 
 def _sync_caddy_config() -> None:
     """Push updated route config to Caddy's admin API.
 
     Builds a JSON config with:
-    - Main HTTPS server on :8443 for dashboard + frontend + path-based bot routes
-    - HTTP server on :80 for HTTPS redirect
+    - Main server for dashboard + frontend + path-based bot routes
+    - HTTP redirect server (when TLS is enabled)
     - forward_auth subrequests to /api/auth/verify for authentication
 
-    Bots are routed via /claw/{name}/ paths on the main :8443 port.
-    OpenClaw's basePath config handles serving at the sub-path natively.
+    TLS_MODE controls certificate handling:
+    - internal (default): Caddy auto-generates a self-signed cert
+    - acme: Let's Encrypt via DOMAIN
+    - custom: Load user-provided cert files from /certs/
+    - off: Plain HTTP (for use behind an upstream proxy)
+
+    Bots are routed via /claw/{name}/ paths on the main port.
 
     Fails silently when Caddy is not reachable (dev mode).
     """
@@ -1242,13 +1344,13 @@ def _sync_caddy_config() -> None:
         )
 
         caddy_port = int(os.environ.get("CADDY_PORT", "8443"))
-        tls_policy = [{"certificate_selection": {"any_tag": ["cert0"]}}]
+        tls_policy, tls_app, scheme = _build_tls_config()
 
         # forward_auth handler: subrequest to dashboard's /api/auth/verify
         login_url = (
             f"{PORTAL_URL}:{caddy_port}/login"
             if PORTAL_URL else
-            f"https://{{http.request.host}}:{caddy_port}/login"
+            f"{scheme}://{{http.request.host}}:{caddy_port}/login"
         )
 
         def _forward_auth_handler(extra_headers=None, redirect_on_fail=False):
@@ -1420,44 +1522,41 @@ def _sync_caddy_config() -> None:
                     "handle": handlers,
                 })
 
+        # Build main server config
+        main_server = {
+            "listen": [f":{caddy_port}"],
+            "routes": main_routes,
+        }
+        if tls_policy:
+            main_server["tls_connection_policies"] = tls_policy
+
+        servers = {"main": main_server}
+
+        # Add HTTP→HTTPS redirect server when TLS is enabled
+        if TLS_MODE != "off":
+            redirect_location = (
+                f"{PORTAL_URL}:{caddy_port}{{http.request.uri}}"
+                if PORTAL_URL else
+                f"https://{{http.request.host}}:{caddy_port}{{http.request.uri}}"
+            )
+            servers["redirect"] = {
+                "listen": [":80"],
+                "routes": [{
+                    "handle": [{
+                        "handler": "static_response",
+                        "headers": {"Location": [redirect_location]},
+                        "status_code": 302,
+                    }],
+                }],
+            }
+
+        apps = {"http": {"servers": servers}}
+        if tls_app:
+            apps["tls"] = tls_app
+
         config = {
             "admin": {"listen": ":2019"},
-            "apps": {
-                "http": {
-                    "servers": {
-                        "https": {
-                            "listen": [f":{caddy_port}"],
-                            "routes": main_routes,
-                            "tls_connection_policies": tls_policy,
-                        },
-                        "http": {
-                            "listen": [":80"],
-                            "routes": [{
-                                "handle": [{
-                                    "handler": "static_response",
-                                    "headers": {
-                                        "Location": [
-                                            f"{PORTAL_URL}:{caddy_port}{{http.request.uri}}"
-                                            if PORTAL_URL else
-                                            f"https://{{http.request.host}}:{caddy_port}{{http.request.uri}}"
-                                        ]
-                                    },
-                                    "status_code": 302,
-                                }],
-                            }],
-                        },
-                    },
-                },
-                "tls": {
-                    "certificates": {
-                        "load_files": [{
-                            "certificate": "/certs/cert.pem",
-                            "key": "/certs/key.pem",
-                            "tags": ["cert0"],
-                        }]
-                    }
-                },
-            },
+            "apps": apps,
         }
 
         _req.post(
@@ -1580,7 +1679,7 @@ async def _lifespan(app: FastAPI):
     _backup_stop_event.set()
 
 
-app = FastAPI(title="ClawFleetManager", lifespan=_lifespan)
+app = FastAPI(title="ClawFarm", lifespan=_lifespan)
 
 _cors_origins: list[str] = ["*"]
 _cors_credentials = False
@@ -1604,6 +1703,7 @@ class CreateBotRequest(BaseModel):
     name: str
     soul: str | None = None
     extra_config: dict | None = None
+    template: str = "default"
 
 
 class DuplicateRequest(BaseModel):
@@ -1844,7 +1944,16 @@ async def api_config(session: dict = Depends(_require_session)):
     return {
         "portal_url": PORTAL_URL or None,
         "caddy_port": int(os.environ.get("CADDY_PORT", "8443")),
+        "tls_mode": TLS_MODE,
     }
+
+
+# --- Templates ---
+
+@app.get("/api/templates")
+async def api_list_templates(session: dict = Depends(_require_session)):
+    """List available bot templates."""
+    return list_templates()
 
 
 # --- Fleet stats ---
@@ -1872,7 +1981,7 @@ async def api_list_bots(session: dict = Depends(_require_session)):
 async def api_create_bot(req: CreateBotRequest, session: dict = Depends(_require_session)):
     try:
         result = create_bot(req.name, req.soul, req.extra_config,
-                            created_by=session["username"])
+                            created_by=session["username"], template=req.template)
         _grant_bot_to_user(session["username"], result["name"])
         return result
     except ValueError as e:

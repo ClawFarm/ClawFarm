@@ -22,7 +22,7 @@ export function Header() {
             <span className="text-emerald-400 text-xs font-bold">C</span>
           </div>
           <span className="text-sm font-semibold tracking-tight text-foreground hidden sm:inline">
-            ClawFleetManager
+            ClawFarm
           </span>
         </Link>
 

@@ -1,4 +1,4 @@
-# ClawFleetManager
+# ClawFarm
 
 Docker-based fleet manager for OpenClaw bots. Single-page dashboard to create, duplicate, fork, backup/rollback, and monitor bot containers.
 
@@ -8,6 +8,7 @@ Docker-based fleet manager for OpenClaw bots. Single-page dashboard to create, d
 botfarm/
 ├── dashboard/              # FastAPI backend (Python 3.12)
 │   ├── app.py              # All backend logic: bot lifecycle, backup, metrics, API routes
+│   ├── entrypoint.sh       # Docker entrypoint: auto-detects Docker socket GID
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── tests/test_fleet.py # ~100 unit + integration tests (pytest)
@@ -18,9 +19,10 @@ botfarm/
 │   ├── src/lib/            # api.ts (API client), types.ts, format.ts
 │   ├── next.config.ts      # Proxies /api/* to backend via rewrites
 │   └── Dockerfile
-├── bot-template/           # Template files for new bots
-│   ├── config.template.json
-│   └── SOUL.md
+├── bot-template/           # Bot templates (one dir per template)
+│   └── default/
+│       ├── openclaw.template.json  # OpenClaw config with {{ENV_VAR}} placeholders
+│       └── SOUL.md
 ├── bots/                   # Runtime: each bot gets a subdirectory (gitignored)
 ├── network/setup-isolation.sh  # iptables rules for bot network isolation
 ├── docker-compose.yml      # Production: dashboard + frontend + Caddy
@@ -50,11 +52,12 @@ cd frontend && npm install && npm run dev
 
 ## Docker Compose Deployment
 
-**Production deployment is via Docker Compose.** All three services (dashboard, frontend, Caddy) run as containers. Caddy handles TLS termination and is the only publicly exposed service.
+**Production deployment is via Docker Compose.** All three services (dashboard, frontend, Caddy) run as containers. Caddy handles TLS termination (configurable via `TLS_MODE`) and is the only publicly exposed service. Docker socket GID is auto-detected at runtime — no manual `DOCKER_GID` configuration needed.
 
 ```bash
+cp .env.example .env  # Edit with your LLM provider details
 docker compose up --build -d
-# Access at https://<server-ip>:8443
+# Access at https://<server-ip>:8443 (default TLS_MODE=internal, self-signed cert)
 # HTTP :80 redirects to HTTPS :8443
 ```
 
@@ -74,6 +77,15 @@ cd dashboard && python -m pytest tests/test_fleet.py -v
 All tests are filesystem-based with monkeypatched paths — no Docker needed.
 
 ## Key Architecture Decisions
+
+### Bot Templates
+Templates live in `bot-template/`. Each template is a directory containing:
+- `openclaw.template.json` — OpenClaw native config with `{{ENV_VAR}}` placeholder syntax
+- `SOUL.md` — Bot personality
+
+The `default` template is used when no template is specified. `{{VAR}}` placeholders are replaced with env var values at bot creation time. Unquoted placeholders (e.g., `{{LLM_CONTEXT_WINDOW}}`) become raw numbers after substitution.
+
+ClawFarm injects gateway auth, proxy config, and tool settings on top of the resolved template — users don't touch those fields. Create new templates by copying `default/` and editing.
 
 ### OpenClaw API Mode
 Bots use `openai-completions` API mode (NOT `openai-responses`). This maps to `/v1/chat/completions` which is vLLM's core API with full tool calling support. The `openai-responses` mode uses `/v1/responses` and does NOT send tool definitions to local models.
@@ -153,7 +165,7 @@ Without this, bot containers get volume mounts pointing to `/data/bots/...` whic
 
 ### File Permissions for Bot Containers
 
-The dashboard container runs as UID 1000 (matching OpenClaw's `node` user and the typical host user). This means all files created by the dashboard are naturally readable/writable by bot containers — no `chown`/`chmod` fixups needed. Docker socket access is granted via `group_add` in `docker-compose.yml` using the host's docker group GID (`DOCKER_GID` env var).
+The dashboard container runs as UID 1000 (matching OpenClaw's `node` user and the typical host user). This means all files created by the dashboard are naturally readable/writable by bot containers — no `chown`/`chmod` fixups needed. Docker socket access is auto-detected: the `entrypoint.sh` script reads the Docker socket's GID at runtime and adds the app user to that group — no `DOCKER_GID` env var needed.
 
 ### Caddy HTTPS Reverse Proxy
 
@@ -172,13 +184,16 @@ Single entry point for all services via Caddy on port 8443 (HTTPS). This is requ
 
 **Startup migration:** On startup, existing bots' `openclaw.json` is checked and `basePath` is removed if present (Caddy handles sub-path routing externally).
 
-**TLS:** Self-signed cert at `certs/cert.pem` + `certs/key.pem`. Generate with:
-```bash
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-  -keyout certs/key.pem -out certs/cert.pem -days 3650 \
-  -subj "/CN=ClawFleetManager" \
-  -addext "subjectAltName=IP:<server-ip>,IP:127.0.0.1,DNS:localhost"
-```
+**TLS modes** (`TLS_MODE` env var):
+
+| Mode | Behavior | Default port | Use case |
+|------|----------|-------------|----------|
+| `internal` **(default)** | Caddy auto-generates self-signed cert | 8443 | LAN/IP — zero config |
+| `acme` | Let's Encrypt via `DOMAIN` env var | 443 | Public domain |
+| `custom` | Load `certs/cert.pem` + `certs/key.pem` | 8443 | Existing PKI |
+| `off` | Plain HTTP, no TLS | 8080 | Behind upstream proxy |
+
+`_build_tls_config()` returns `(tls_connection_policies, tls_app, scheme)` based on `TLS_MODE`. `_sync_caddy_config()` uses these to build the Caddy JSON config. In `off` mode, no HTTP→HTTPS redirect server is created. In `acme` mode, `PORTAL_URL` is auto-derived from `DOMAIN` if not set.
 
 ### Duplicate vs Fork
 - **Duplicate**: Copies config, soul, and workspace. No lineage tracked.
@@ -222,7 +237,8 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 | `frontend/src/app/users/page.tsx` | Admin user management page |
 | `frontend/src/hooks/use-auth.ts` | SWR hook for auth state |
 | `frontend/next.config.ts` | API proxy rewrite rules |
-| `bot-template/config.template.json` | Base config for new bots |
+| `bot-template/default/openclaw.template.json` | Default OpenClaw config template with `{{ENV_VAR}}` placeholders |
+| `bot-template/default/SOUL.md` | Default bot personality |
 
 ## Environment Variables
 
@@ -231,23 +247,27 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 | `LLM_BASE_URL` | Yes | vLLM endpoint (e.g., `http://10.88.100.186:8000/v1`) |
 | `LLM_MODEL` | Yes | Model name (e.g., `Qwen3.5-122B-A10B`) |
 | `LLM_API_KEY` | Yes | API key for the LLM server |
+| `LLM_CONTEXT_WINDOW` | No | Model context window size in tokens (default: 128000) |
+| `LLM_MAX_TOKENS` | No | Max output tokens per response (default: 8192) |
 | `LLM_HOST` | For isolation | LLM server IP (used by iptables rules) |
 | `LLM_PORT` | For isolation | LLM server port (used by iptables rules) |
+| `TLS_MODE` | No | TLS mode: `internal` (default), `acme`, `custom`, `off` |
+| `DOMAIN` | For `acme` | Public domain for Let's Encrypt (e.g., `farm.example.com`) |
+| `ACME_EMAIL` | No | Email for Let's Encrypt notifications |
 | `BOT_PORT_START` | No | Start of port range (default: 3001). Dev-mode only — in compose mode, bots use path-based routing under `:8443` |
 | `BOT_PORT_END` | No | End of port range (default: 3100). Dev-mode only |
 | `HOST_BOTS_DIR` | Docker Compose | **Host-side** path to `bots/` dir — required when dashboard runs in a container (see workaround above) |
 | `DASHBOARD_PORT` | No | Frontend port (default: 3000). Dev-mode only — in compose mode, Caddy is the single entry point |
-| `CADDY_PORT` | No | Caddy HTTPS port (default: 8443) |
+| `CADDY_PORT` | No | Caddy listening port (default: 8443) |
 | `CADDY_ADMIN_URL` | Docker Compose | Caddy admin API URL (default: `http://caddy:2019`) |
-| `PORTAL_URL` | Recommended | External base URL (e.g., `https://10.88.142.100` or `https://fleet.example.com`) — used for HTTP redirects and bot UI links |
+| `PORTAL_URL` | No | External base URL override (auto-derived in `acme` mode from `DOMAIN`, not needed in `internal`/`custom` mode) |
 | `BRAVE_API_KEY` | No | Brave Search API key for agent web search |
-| `DOCKER_GID` | Docker Compose | GID of the `docker` group on the host (default: 988). Detect with `stat -c '%g' /var/run/docker.sock` |
 | `OPENCLAW_IMAGE` | No | Bot container image (default: `ghcr.io/openclaw/openclaw:latest`) |
 | `BACKUP_DIR` | No | External backup directory. Empty = store in bot's `.backups/` dir |
 | `BACKUP_INTERVAL_SECONDS` | No | How often to run scheduled backups (default: 3600, 0 = disabled) |
 | `BACKUP_KEEP` | No | Max scheduled backups to retain per bot (default: 24) |
 | `ADMIN_USER` | No | Default admin username (default: `admin`) |
-| `ADMIN_PASSWORD` | No | Admin password (empty = auto-generated, printed to stdout) |
+| `ADMIN_PASSWORD` | No | Admin password (empty = auto-generated, printed to stdout with prominent banner) |
 | `SESSION_TTL` | No | Session lifetime in seconds (default: 86400 = 24h) |
 | `AUTH_DISABLED` | No | Set to `1` or `true` to disable auth entirely |
 

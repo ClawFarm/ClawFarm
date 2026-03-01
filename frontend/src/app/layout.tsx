@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ClawFleetManager",
-  description: "Docker-based fleet manager for OpenClaw bots",
+  title: "ClawFarm",
+  description: "Self-hosted fleet manager for OpenClaw AI agents",
 };
 
 export default function RootLayout({
