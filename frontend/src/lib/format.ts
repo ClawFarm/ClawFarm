@@ -21,16 +21,25 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-export function botUiUrl(port: number, portalUrl?: string | null, token?: string): string {
+export function botUiUrl(
+  bot: { port: number; ui_path?: string | null },
+  portalUrl?: string | null,
+  token?: string,
+): string {
+  if (bot.ui_path) {
+    if (typeof window === "undefined") return bot.ui_path;
+    return `${window.location.origin}${bot.ui_path}`;
+  }
+  // Dev mode: port-based
   let base: string;
   if (typeof window === "undefined") {
-    base = `http://localhost:${port}`;
+    base = `http://localhost:${bot.port}`;
   } else if (portalUrl) {
-    base = `${portalUrl}:${port}/`;
+    base = `${portalUrl}:${bot.port}/`;
   } else if (window.location.protocol === "https:") {
-    base = `https://${window.location.hostname}:${port}/`;
+    base = `https://${window.location.hostname}:${bot.port}/`;
   } else {
-    base = `http://${window.location.hostname}:${port}`;
+    base = `http://${window.location.hostname}:${bot.port}`;
   }
   return token ? `${base}#token=${token}` : base;
 }

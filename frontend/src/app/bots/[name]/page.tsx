@@ -65,8 +65,8 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
               <div>
-                <span className="text-muted-foreground">Port</span>
-                <div className="font-medium">{detail.port}</div>
+                <span className="text-muted-foreground">{detail.ui_path ? "Path" : "Port"}</span>
+                <div className="font-medium">{detail.ui_path || detail.port}</div>
               </div>
               <div>
                 <span className="text-muted-foreground">Container</span>
@@ -83,7 +83,7 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
                 <div className="font-medium">{formatBytes(detail.storage_bytes)}</div>
               </div>
             </div>
-            {detail.gateway_token && (
+            {!detail.ui_path && detail.gateway_token && (
               <div className="text-xs">
                 <span className="text-muted-foreground">Gateway Token</span>
                 <div className="font-mono bg-secondary px-2 py-1 rounded mt-0.5 flex items-center gap-2">
@@ -124,9 +124,9 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
               >
                 Approve Devices
               </Button>
-              {detail.port > 0 && (
+              {(detail.ui_path || detail.port > 0) && (
                 <a
-                  href={botUiUrl(detail.port, config?.portal_url, detail.gateway_token)}
+                  href={botUiUrl(detail, config?.portal_url, detail.gateway_token)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={() => { api.approveDevices(detail!.name).catch(() => {}); }}

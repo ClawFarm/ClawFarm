@@ -47,7 +47,7 @@ export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
               {bot.status}
             </Badge>
             <a
-              href={botUiUrl(bot.port, config?.portal_url, bot.gateway_token)}
+              href={botUiUrl(bot, config?.portal_url)}
               target="_blank"
               rel="noopener noreferrer"
               className="text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors uppercase tracking-wide"
@@ -62,7 +62,7 @@ export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
       </CardHeader>
       <CardContent className="px-4 pb-4 space-y-3">
         <div className="flex items-center gap-4 flex-wrap">
-          <MetaItem label="Port" value={`:${bot.port}`} />
+          <MetaItem label={bot.ui_path ? "Path" : "Port"} value={bot.ui_path || `:${bot.port}`} />
           <MetaItem label="Storage" value={formatBytes(bot.storage_bytes)} />
           {bot.backup_count > 0 && (
             <MetaItem

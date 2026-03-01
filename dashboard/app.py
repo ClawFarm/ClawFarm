@@ -17,6 +17,8 @@ import docker
 from dotenv import load_dotenv
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Literal
+
 from pydantic import BaseModel
 
 load_dotenv()
@@ -39,7 +41,6 @@ SESSION_TTL = int(os.environ.get("SESSION_TTL", "86400"))  # 24h default
 AUTH_DISABLED = os.environ.get("AUTH_DISABLED", "").lower() in ("1", "true", "yes")
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 SESSIONS: dict[str, dict] = {}  # token -> {username, role, bots, created_at}
-_PORT_TO_BOT: dict[int, str] = {}  # port -> bot_name, rebuilt by _sync_caddy_config
 
 
 def _users_file_path() -> Path:
@@ -160,6 +161,24 @@ def _invalidate_user_sessions(username: str) -> int:
     return len(to_remove)
 
 
+_login_attempts: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+
+
+def _check_login_rate(ip: str) -> None:
+    now = time.time()
+    with _login_lock:
+        attempts = [t for t in _login_attempts.get(ip, []) if now - t < 300]
+        _login_attempts[ip] = attempts
+        if len(attempts) >= 5:
+            raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+
+
+def _record_failed_login(ip: str) -> None:
+    with _login_lock:
+        _login_attempts.setdefault(ip, []).append(time.time())
+
+
 def _user_can_access_bot(session: dict, bot_name: str) -> bool:
     """Check if user's session grants access to a specific bot."""
     if session["role"] == "admin":
@@ -168,11 +187,6 @@ def _user_can_access_bot(session: dict, bot_name: str) -> bool:
     if "*" in bots:
         return True
     return bot_name in bots
-
-
-def _bot_name_from_port(port: int) -> str | None:
-    """Look up bot name from port using the cache. Returns None if not found."""
-    return _PORT_TO_BOT.get(port)
 
 
 def _grant_bot_to_user(username: str, bot_name: str) -> None:
@@ -580,7 +594,8 @@ def write_bot_files(name: str, config: dict, soul: str | None = None,
 # ---------------------------------------------------------------------------
 # Container launcher (shared by create, duplicate, fork)
 # ---------------------------------------------------------------------------
-def _prepare_openclaw_home(bot_dir: Path, soul_text: str, trusted_proxies: list[str] | None = None) -> Path:
+def _prepare_openclaw_home(bot_dir: Path, soul_text: str, trusted_proxies: list[str] | None = None,
+                           bot_name: str | None = None) -> Path:
     """Create .openclaw/ config dir for a bot so it's usable from the start.
 
     If a workspace already exists (e.g. copied from a source bot during
@@ -649,7 +664,9 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str, trusted_proxies: list[
                     "userHeader": "X-Forwarded-User",
                 },
             },
-            "controlUi": {"dangerouslyAllowHostHeaderOriginFallback": True},
+            "controlUi": {
+                "dangerouslyAllowHostHeaderOriginFallback": True,
+            },
             "trustedProxies": trusted_proxies or ["127.0.0.1"],
         },
         **({"tools": {"web": {"search": {"provider": "brave", "apiKey": brave_api_key}}}}
@@ -705,7 +722,8 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
     # Read soul text for OpenClaw workspace injection
     soul_path = bot_dir / "SOUL.md"
     soul_text = soul_path.read_text() if soul_path.exists() else ""
-    oc_dir = _prepare_openclaw_home(bot_dir, soul_text, trusted_proxies=trusted_proxies)
+    oc_dir = _prepare_openclaw_home(bot_dir, soul_text, trusted_proxies=trusted_proxies,
+                                    bot_name=name)
 
     container = client.containers.run(
         image,
@@ -737,6 +755,7 @@ def _launch_container(name: str, bot_dir: Path) -> dict:
         "status": container.status,
         "port": port,
         "container_name": container_name,
+        "ui_path": f"/claw/{name}/" if os.environ.get("HOST_BOTS_DIR") else None,
     }
 
 
@@ -747,6 +766,8 @@ def create_bot(name: str, soul: str | None = None, extra_config: dict | None = N
                created_by: str | None = None) -> dict:
     """Full orchestration: sanitize, gen config, write files, launch container."""
     name = sanitize_name(name)
+    if (BOTS_DIR / name).exists():
+        raise ValueError(f"Bot already exists: {name!r}")
     config = generate_config(name, extra_config)
     bot_dir = write_bot_files(name, config, soul, created_by=created_by)
     return _launch_container(name, bot_dir)
@@ -827,7 +848,7 @@ def list_bots() -> list[dict]:
             "backup_count": len(meta.get("backups", [])),
             "storage_bytes": get_bot_storage(name),
             "cron_jobs": get_bot_cron_jobs(name),
-            "gateway_token": get_gateway_token(name),
+            "ui_path": f"/claw/{name}/" if os.environ.get("HOST_BOTS_DIR") else None,
         })
     return bots
 
@@ -1072,6 +1093,7 @@ def get_bot_detail(name: str) -> dict:
         "gateway_token": gateway_token,
         "storage_bytes": get_bot_storage(name),
         "cron_jobs": get_bot_cron_jobs(name),
+        "ui_path": f"/claw/{name}/" if os.environ.get("HOST_BOTS_DIR") else None,
     }
 
 
@@ -1129,14 +1151,12 @@ def _sync_caddy_config() -> None:
     """Push updated route config to Caddy's admin API.
 
     Builds a JSON config with:
-    - Main HTTPS server on :8443 for dashboard + frontend
-    - Per-bot HTTPS server on each bot's allocated port (TLS termination)
+    - Main HTTPS server on :8443 for dashboard + frontend + path-based bot routes
     - HTTP server on :80 for HTTPS redirect
     - forward_auth subrequests to /api/auth/verify for authentication
 
-    Each bot gets its own Caddy server because OpenClaw's Control UI connects
-    WebSocket to the root "/" of the origin, making path-based routing impossible.
-    Per-port routing gives each bot its own origin.
+    Bots are routed via /claw/{name}/ paths on the main :8443 port.
+    OpenClaw's basePath config handles serving at the sub-path natively.
 
     Fails silently when Caddy is not reachable (dev mode).
     """
@@ -1147,14 +1167,6 @@ def _sync_caddy_config() -> None:
         containers = client.containers.list(
             all=False, filters={"label": "openclaw.bot=true"}
         )
-
-        # Rebuild port→bot cache
-        _PORT_TO_BOT.clear()
-        for c in containers:
-            cname = c.labels.get("openclaw.name", "")
-            cport = int(c.labels.get("openclaw.port", 0))
-            if cname and cport:
-                _PORT_TO_BOT[cport] = cname
 
         caddy_port = int(os.environ.get("CADDY_PORT", "8443"))
         tls_policy = [{"certificate_selection": {"any_tag": ["cert0"]}}]
@@ -1171,7 +1183,7 @@ def _sync_caddy_config() -> None:
 
             Uses copy_response_headers (Caddy's native forward_auth mechanism)
             so that the auth subrequest doesn't consume the original connection.
-            This is critical for WebSocket upgrade requests on bot ports.
+            This is critical for WebSocket upgrade requests.
             """
             handle_response = [
                 {
@@ -1231,48 +1243,6 @@ def _sync_caddy_config() -> None:
             if extra_headers:
                 h["headers"]["request"]["set"].update(extra_headers)
             return h
-
-        # Per-bot HTTPS servers — Caddy terminates TLS, forwards to container
-        bot_servers = {}
-        for c in containers:
-            name = c.labels.get("openclaw.name", "")
-            port = int(c.labels.get("openclaw.port", 0))
-            if not name or not port:
-                continue
-            container_name = f"openclaw-bot-{name}"
-
-            if AUTH_DISABLED:
-                bot_routes = [{
-                    "handle": [
-                        {
-                            "handler": "headers",
-                            "request": {"set": {"X-Forwarded-User": ["dev"]}},
-                        },
-                        {
-                            "handler": "reverse_proxy",
-                            "upstreams": [{"dial": f"{container_name}:18789"}],
-                        },
-                    ],
-                }]
-            else:
-                bot_routes = [{
-                    "handle": [
-                        _forward_auth_handler(
-                            extra_headers={"X-Original-Port": [str(port)]},
-                            redirect_on_fail=True,
-                        ),
-                        {
-                            "handler": "reverse_proxy",
-                            "upstreams": [{"dial": f"{container_name}:18789"}],
-                        },
-                    ],
-                }]
-
-            bot_servers[f"bot_{name}"] = {
-                "listen": [f":{port}"],
-                "routes": bot_routes,
-                "tls_connection_policies": tls_policy,
-            }
 
         # Main HTTPS routes
         if AUTH_DISABLED:
@@ -1336,6 +1306,47 @@ def _sync_caddy_config() -> None:
                 },
             ]
 
+        # Path-based bot routes — insert before catch-all frontend route.
+        # Caddy strips /claw/{name} prefix before proxying to the bot, so
+        # OpenClaw serves everything at root (no basePath needed).
+        # OpenClaw Control UI connects WebSocket to wss://{host}/ (root),
+        # so we set a cfm_bot cookie and route root WS via that cookie.
+        if os.environ.get("HOST_BOTS_DIR"):
+            for c in containers:
+                name = c.labels.get("openclaw.name", "")
+                if not name:
+                    continue
+                container_name = f"openclaw-bot-{name}"
+                bot_proxy = {"handler": "reverse_proxy", "upstreams": [{"dial": f"{container_name}:18789"}]}
+                strip_prefix = {"handler": "rewrite", "strip_path_prefix": f"/claw/{name}"}
+                set_cookie = {"handler": "headers", "response": {"set": {
+                    "Set-Cookie": [f"cfm_bot={name}; Path=/; HttpOnly; Secure; SameSite=Lax"],
+                }}}
+                ws_cookie_re = f"(?:^|;\\s*)cfm_bot={re.escape(name)}(?:;|$)"
+                if AUTH_DISABLED:
+                    fwd_user = {"handler": "headers", "request": {"set": {"X-Forwarded-User": ["dev"]}}}
+                    handlers = [fwd_user, set_cookie, strip_prefix, bot_proxy]
+                else:
+                    handlers = [
+                        _forward_auth_handler(extra_headers={"X-Original-Bot": [name]}, redirect_on_fail=True),
+                        set_cookie,
+                        strip_prefix,
+                        bot_proxy,
+                    ]
+                # Bot route: matches path /claw/{name}/* OR root / WebSocket
+                # with cfm_bot cookie. strip_path_prefix is a no-op for root /.
+                main_routes.insert(-1, {
+                    "match": [
+                        {"path": [f"/claw/{name}/*", f"/claw/{name}"]},
+                        {
+                            "path": ["/"],
+                            "header": {"Upgrade": ["websocket"]},
+                            "header_regexp": {"Cookie": {"name": "cfm_bot", "pattern": ws_cookie_re}},
+                        },
+                    ],
+                    "handle": handlers,
+                })
+
         config = {
             "admin": {"listen": ":2019"},
             "apps": {
@@ -1362,7 +1373,6 @@ def _sync_caddy_config() -> None:
                                 }],
                             }],
                         },
-                        **bot_servers,
                     },
                 },
                 "tls": {
@@ -1472,6 +1482,21 @@ async def _lifespan(app: FastAPI):
                     _connect_caddy_to_network(client, f"openclaw-net-{name}")
         except Exception:
             pass
+        # Migrate existing bots: remove basePath (Caddy strip_path_prefix handles it)
+        for bot_dir in BOTS_DIR.iterdir():
+            if not bot_dir.is_dir() or bot_dir.name.startswith("."):
+                continue
+            oc_cfg = bot_dir / ".openclaw" / "openclaw.json"
+            if not oc_cfg.exists():
+                continue
+            try:
+                cfg = json.loads(oc_cfg.read_text())
+                cui = cfg.get("gateway", {}).get("controlUi", {})
+                if "basePath" in cui:
+                    del cui["basePath"]
+                    oc_cfg.write_text(json.dumps(cfg, indent=2))
+            except (json.JSONDecodeError, OSError):
+                pass
     _sync_caddy_config()
     # Start backup scheduler thread
     if BACKUP_INTERVAL_SECONDS > 0:
@@ -1483,10 +1508,20 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ClawFleetManager", lifespan=_lifespan)
+
+_cors_origins: list[str] = ["*"]
+_cors_credentials = False
+if PORTAL_URL:
+    caddy_port = int(os.environ.get("CADDY_PORT", "8443"))
+    _cors_origins = [f"{PORTAL_URL}:{caddy_port}"]
+    if caddy_port == 443:
+        _cors_origins.append(PORTAL_URL)
+    _cors_credentials = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1518,13 +1553,13 @@ class LoginRequest(BaseModel):
 class CreateUserRequest(BaseModel):
     username: str
     password: str
-    role: str = "user"
+    role: Literal["admin", "user"] = "user"
     bots: list[str] = []
 
 
 class UpdateUserRequest(BaseModel):
     password: str | None = None
-    role: str | None = None
+    role: Literal["admin", "user"] | None = None
     bots: list[str] | None = None
 
 
@@ -1541,13 +1576,19 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 
 @app.post("/api/auth/login")
-async def api_auth_login(req: LoginRequest, response: Response):
+async def api_auth_login(req: LoginRequest, request: Request, response: Response):
     if AUTH_DISABLED:
         return {"ok": True, "username": "dev", "role": "admin"}
+    ip = request.client.host if request.client else "unknown"
+    _check_login_rate(ip)
     users = _load_users()
     user = users.get(req.username)
     if not user or not _verify_password(req.password, user["password_hash"]):
+        _record_failed_login(ip)
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    # Clear failed attempts on success
+    with _login_lock:
+        _login_attempts.pop(ip, None)
     token = _create_session(req.username)
     _set_session_cookie(response, token)
     return {"ok": True, "username": req.username, "role": user["role"]}
@@ -1572,16 +1613,11 @@ async def api_auth_verify(request: Request, response: Response,
     if not session:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    # Per-bot RBAC: check if user can access this bot (via X-Original-Port)
-    original_port = request.headers.get("X-Original-Port")
-    if original_port:
-        try:
-            port = int(original_port)
-            bot_name = _bot_name_from_port(port)
-            if bot_name and not _user_can_access_bot(session, bot_name):
-                raise HTTPException(status_code=403, detail="Access denied to this bot")
-        except ValueError:
-            pass
+    # Per-bot RBAC: check if user can access this bot (via X-Original-Bot)
+    original_bot = request.headers.get("X-Original-Bot")
+    if original_bot:
+        if not _user_can_access_bot(session, original_bot):
+            raise HTTPException(status_code=403, detail="Access denied to this bot")
 
     return Response(status_code=200, headers={"X-Forwarded-User": session["username"]})
 
@@ -1730,7 +1766,7 @@ async def api_auth_delete_user(username: str,
 # --- Config ---
 
 @app.get("/api/config")
-async def api_config():
+async def api_config(session: dict = Depends(_require_session)):
     """Return public configuration for the frontend."""
     return {
         "portal_url": PORTAL_URL or None,

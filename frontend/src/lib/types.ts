@@ -17,7 +17,7 @@ export interface Bot {
   backup_count: number;
   storage_bytes: number;
   cron_jobs: CronJob[];
-  gateway_token: string;
+  ui_path: string | null;
 }
 
 export interface Backup {
@@ -59,6 +59,7 @@ export interface BotDetail {
   gateway_token: string;
   storage_bytes: number;
   cron_jobs: CronJob[];
+  ui_path: string | null;
 }
 
 export interface FleetStats {

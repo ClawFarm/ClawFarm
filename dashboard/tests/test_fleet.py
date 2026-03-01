@@ -10,7 +10,7 @@ import pytest
 from app import (
     SESSIONS,
     _bootstrap_admin,
-    _bot_name_from_port,
+    _check_login_rate,
     _cleanup_expired_sessions,
     _create_session,
     _get_session,
@@ -18,12 +18,15 @@ from app import (
     _hash_password,
     _invalidate_user_sessions,
     _load_users,
-    _PORT_TO_BOT,
+    _login_attempts,
+    _login_lock,
+    _record_failed_login,
     _save_users,
     _user_can_access_bot,
     _verify_password,
     allocate_port,
     create_backup,
+    create_bot,
     deep_merge,
     duplicate_bot,
     ensure_meta,
@@ -961,10 +964,12 @@ def auth_env(monkeypatch, tmp_path):
     monkeypatch.setattr("app.SESSION_TTL", 3600)
     monkeypatch.setattr("app.ADMIN_USER", "admin")
     SESSIONS.clear()
-    _PORT_TO_BOT.clear()
+    with _login_lock:
+        _login_attempts.clear()
     yield {"bots_dir": bots_dir, "users_file": users_file}
     SESSIONS.clear()
-    _PORT_TO_BOT.clear()
+    with _login_lock:
+        _login_attempts.clear()
 
 
 # ===========================================================================
@@ -1052,10 +1057,14 @@ class TestRBAC:
         session = {"username": "alice", "role": "user", "bots": []}
         assert _user_can_access_bot(session, "any-bot") is False
 
-    def test_port_to_bot_cache(self, auth_env):
-        _PORT_TO_BOT[3001] = "my-bot"
-        assert _bot_name_from_port(3001) == "my-bot"
-        assert _bot_name_from_port(9999) is None
+    def test_login_rate_limiting(self, auth_env):
+        """Test that 5 failed logins from the same IP triggers 429."""
+        ip = "192.168.1.100"
+        for _ in range(5):
+            _record_failed_login(ip)
+        with pytest.raises(Exception) as exc_info:
+            _check_login_rate(ip)
+        assert exc_info.value.status_code == 429
 
 
 # ===========================================================================
@@ -1241,21 +1250,18 @@ class TestAuthAPI:
         r = c2.get("/api/auth/users")
         assert r.status_code == 403
 
-    def test_verify_with_port_rbac(self):
-        """Test that verify checks per-bot RBAC when X-Original-Port is set."""
+    def test_verify_with_bot_name_rbac(self):
+        """Test that verify checks per-bot RBAC when X-Original-Bot is set."""
         c = self._login_client()
         c.post("/api/auth/users", json={
             "username": "limited", "password": "lp", "role": "user", "bots": ["bot-a"],
         })
         c2 = self._login_client("limited", "lp")
-        # Set up port cache
-        _PORT_TO_BOT[3001] = "bot-a"
-        _PORT_TO_BOT[3002] = "bot-b"
         # Access allowed bot
-        r = c2.get("/api/auth/verify", headers={"X-Original-Port": "3001"})
+        r = c2.get("/api/auth/verify", headers={"X-Original-Bot": "bot-a"})
         assert r.status_code == 200
         # Access denied bot
-        r2 = c2.get("/api/auth/verify", headers={"X-Original-Port": "3002"})
+        r2 = c2.get("/api/auth/verify", headers={"X-Original-Bot": "bot-b"})
         assert r2.status_code == 403
 
 
@@ -1378,3 +1384,52 @@ class TestRBACEndpoints:
             "new_password": "   ",
         })
         assert r.status_code == 400
+
+    def test_role_validation_rejects_invalid(self):
+        """Test that creating a user with an invalid role returns 422."""
+        c = self._login_client()
+        r = c.post("/api/auth/users", json={
+            "username": "test", "password": "pass", "role": "superadmin",
+        })
+        assert r.status_code == 422
+
+    def test_role_validation_accepts_valid(self):
+        """Test that valid roles 'admin' and 'user' are accepted."""
+        c = self._login_client()
+        r1 = c.post("/api/auth/users", json={
+            "username": "u1", "password": "pass", "role": "user",
+        })
+        assert r1.status_code == 200
+        r2 = c.post("/api/auth/users", json={
+            "username": "u2", "password": "pass", "role": "admin",
+        })
+        assert r2.status_code == 200
+
+    def test_login_rate_limiting_endpoint(self):
+        """Test that 5+ rapid failed logins return 429."""
+        from app import app
+        from fastapi.testclient import TestClient
+        c = TestClient(app)
+        for _ in range(5):
+            c.post("/api/auth/login", json={"username": "nobody", "password": "wrong"})
+        r = c.post("/api/auth/login", json={"username": "nobody", "password": "wrong"})
+        assert r.status_code == 429
+
+    def test_config_requires_auth(self):
+        """Test that /api/config requires authentication."""
+        r = self.client.get("/api/config")
+        assert r.status_code == 401
+
+
+# ===========================================================================
+# Bot name collision guard
+# ===========================================================================
+class TestCreateBotNameCollision:
+    def test_create_bot_name_collision(self, bot_env, monkeypatch):
+        """Test that creating a bot with an existing name raises ValueError."""
+        bots_dir = bot_env["bots_dir"]
+        # Create a bot directory to simulate existing bot
+        (bots_dir / "existing-bot").mkdir()
+        monkeypatch.setattr("app._get_client", lambda: MagicMock())
+        with pytest.raises(ValueError, match="already exists"):
+            create_bot("existing-bot")

@@ -81,7 +81,7 @@ Bots use `openai-completions` API mode (NOT `openai-responses`). This maps to `/
 ### Bot Container Setup
 Each bot gets:
 - Its own Docker bridge network (isolation)
-- Port allocated from `BOT_PORT_START`–`BOT_PORT_END` range
+- Port allocated from internal range (used for container labels/identification)
 - `.openclaw/` directory mounted as `/home/node/.openclaw` with:
   - `openclaw.json` — model provider config, gateway settings
   - `workspace/SOUL.md` — personality
@@ -159,14 +159,18 @@ The dashboard container runs as UID 1000 (matching OpenClaw's `node` user and th
 
 Single entry point for all services via Caddy on port 8443 (HTTPS). This is required because OpenClaw Control UI uses `crypto.subtle` which only works in a Secure Context (HTTPS or localhost).
 
-**Architecture:** Per-port TLS termination. Each bot gets its own HTTPS port through Caddy because OpenClaw's Control UI connects WebSocket to the root `/` of the origin (path-based routing is impossible).
+**Architecture:** Path-based routing under the single `:8443` port. Each bot is accessible at `https://host:8443/claw/{name}/`. Caddy uses `strip_path_prefix` to strip `/claw/{name}` before proxying to the bot — OpenClaw serves at root (no `basePath` config needed). This eliminates exposing 100 ports — only `:8443` and `:80` are published.
 
 **Route structure:**
 - `:8443/` and `:8443/*` → Next.js frontend (`frontend:3000`)
 - `:8443/api/*` → FastAPI dashboard (`dashboard:8080`)
-- `:{bot_port}/` → Per-bot TLS-terminated reverse proxy to `openclaw-bot-{name}:18789`
+- `:8443/claw/{name}/*` → strip prefix → reverse proxy to `openclaw-bot-{name}:18789`
+
+**WebSocket routing:** OpenClaw Control UI connects WebSocket to `wss://{host}/` (root), ignoring the sub-path. Caddy sets a `cfm_bot={name}` cookie when serving the Control UI page. Root WebSocket upgrade requests are matched by a `header_regexp` on the `Cookie` header and routed to the correct bot. The `header_regexp` key must be the header name (e.g., `"Cookie": {"name": "cfm_bot", "pattern": "..."}`) — NOT `{"cfm_bot": {"name": "Cookie", ...}}`.
 
 **Dynamic route sync:** `_sync_caddy_config()` in `app.py` pushes the full JSON config to Caddy's admin API (`POST http://caddy:2019/load`) on every bot lifecycle event (create, delete, start, stop) and on dashboard startup. Uses full-state reconciliation — rebuilds the entire config from current Docker container state. Caddy is connected to each bot's bridge network to reach containers directly.
+
+**Startup migration:** On startup, existing bots' `openclaw.json` is checked and `basePath` is removed if present (Caddy handles sub-path routing externally).
 
 **TLS:** Self-signed cert at `certs/cert.pem` + `certs/key.pem`. Generate with:
 ```bash
@@ -195,9 +199,9 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 
 **Sessions:** In-memory dict keyed by `secrets.token_urlsafe(32)`. Lost on restart (users must re-login). `_get_session()` re-reads `users.json` every call for always-current RBAC.
 
-**RBAC:** Admin role → all bots. `bots: ["*"]` → all bots. Otherwise check specific bot name list. Per-bot port access uses `_PORT_TO_BOT` cache (rebuilt by `_sync_caddy_config`, zero Docker API calls per auth check).
+**RBAC:** Admin role → all bots. `bots: ["*"]` → all bots. Otherwise check specific bot name list. Per-bot path access uses `X-Original-Bot` header set by Caddy (zero Docker API calls per auth check).
 
-**Caddy integration:** When `AUTH_DISABLED` is false, Caddy routes are split into public (login, verify, assets) and protected (everything else). Protected routes use forward_auth with subrequest to `/api/auth/verify`. Bot port routes include `X-Original-Port` header for per-bot RBAC.
+**Caddy integration:** When `AUTH_DISABLED` is false, Caddy routes are split into public (login, verify, assets) and protected (everything else). Protected routes use forward_auth with subrequest to `/api/auth/verify`. Bot path routes include `X-Original-Bot` header for per-bot RBAC.
 
 **Cookie:** `cfm_session`, HttpOnly + Secure + SameSite=Lax, 24h TTL.
 
@@ -229,10 +233,10 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 | `LLM_API_KEY` | Yes | API key for the LLM server |
 | `LLM_HOST` | For isolation | LLM server IP (used by iptables rules) |
 | `LLM_PORT` | For isolation | LLM server port (used by iptables rules) |
-| `BOT_PORT_START` | No | Start of port range (default: 3001) |
-| `BOT_PORT_END` | No | End of port range (default: 3100) |
+| `BOT_PORT_START` | No | Start of port range (default: 3001). Dev-mode only — in compose mode, bots use path-based routing under `:8443` |
+| `BOT_PORT_END` | No | End of port range (default: 3100). Dev-mode only |
 | `HOST_BOTS_DIR` | Docker Compose | **Host-side** path to `bots/` dir — required when dashboard runs in a container (see workaround above) |
-| `DASHBOARD_PORT` | No | Frontend port (default: 3000) |
+| `DASHBOARD_PORT` | No | Frontend port (default: 3000). Dev-mode only — in compose mode, Caddy is the single entry point |
 | `CADDY_PORT` | No | Caddy HTTPS port (default: 8443) |
 | `CADDY_ADMIN_URL` | Docker Compose | Caddy admin API URL (default: `http://caddy:2019`) |
 | `PORTAL_URL` | Recommended | External base URL (e.g., `https://10.88.142.100` or `https://fleet.example.com`) — used for HTTP redirects and bot UI links |

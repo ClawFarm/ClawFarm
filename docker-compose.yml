@@ -42,7 +42,6 @@ services:
     ports:
       - "${CADDY_PORT:-8443}:8443"
       - "80:80"
-      - "${BOT_PORT_START:-3001}-${BOT_PORT_END:-3100}:${BOT_PORT_START:-3001}-${BOT_PORT_END:-3100}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - ./certs:/certs:ro
