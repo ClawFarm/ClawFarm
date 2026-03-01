@@ -1,6 +1,20 @@
 # ClawFarm
 
-Self-hosted fleet manager for [OpenClaw](https://github.com/openclaw/openclaw) AI agents. Deploy, monitor, and manage autonomous agents on your own hardware.
+Self-hosted fleet manager for [OpenClaw](https://github.com/openclaw/openclaw) AI agents.
+
+OpenClaw is a powerful autonomous AI agent, but it's designed as a **single-operator personal assistant** — one gateway process, one admin, CLI-driven setup. Running multiple agents means manually provisioning each instance, managing separate configs, ports, and TLS certs, with no isolation between them.
+
+ClawFarm wraps OpenClaw in operational infrastructure:
+
+- **Container isolation** — each agent runs in its own Docker container and network. Agents can't see each other or reach your LAN.
+- **Web dashboard** — create, start/stop, duplicate, fork, and delete agents from a browser instead of the command line.
+- **Multi-user RBAC** — different users own different agents, with per-agent access control enforced at the reverse proxy layer.
+- **Backup & rollback** — scheduled hourly backups with retention policies and one-click restore per agent.
+- **Zero-config HTTPS** — Caddy handles TLS termination with path-based routing (`/claw/{name}/`) under a single port. Four modes: auto-generated self-signed, Let's Encrypt, custom certs, or plain HTTP behind a proxy.
+- **Monitoring** — CPU, memory, storage, and token usage per agent from the dashboard.
+- **Templates** — define reusable agent configurations with `{{ENV_VAR}}` substitution. Create new agents in seconds.
+
+Think of it as **Portainer for OpenClaw** — the AI capabilities are 100% OpenClaw, ClawFarm just makes running a fleet of them manageable.
 
 ## Quick Start
 
@@ -118,17 +132,6 @@ Example: an OpenAI-native template only needs an API key — no base URL or mode
   }
 }
 ```
-
-## Features
-
-- **Real-time dashboard** — health status, token usage, memory, CPU per bot
-- **Per-bot isolation** — each bot gets its own Docker container and bridge network
-- **Backup/rollback** — compressed archives with configurable retention
-- **Multi-user auth** — session-based with per-bot RBAC
-- **SOUL.md personalities** — each bot has its own character
-- **Multiple templates** — different LLM configs for different use cases
-- **Single HTTPS port** — Caddy reverse proxy with path-based routing
-- **Duplicate/fork** — clone bots with full workspace and memories
 
 ## Configuration
 

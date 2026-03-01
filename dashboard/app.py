@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 import os
 import re
 import secrets
@@ -11,17 +12,18 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import bcrypt
 import docker
 from dotenv import load_dotenv
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Literal
-
 from pydantic import BaseModel
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 # Ensure numeric template vars have defaults (unquoted in templates → must resolve)
 os.environ.setdefault("LLM_CONTEXT_WINDOW", "128000")

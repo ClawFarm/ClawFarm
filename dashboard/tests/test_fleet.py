@@ -2,11 +2,9 @@ import copy
 import json
 import tarfile
 import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-
 from app import (
     SESSIONS,
     _bootstrap_admin,
@@ -14,6 +12,7 @@ from app import (
     _check_login_rate,
     _cleanup_expired_sessions,
     _create_session,
+    _effective_status,
     _get_session,
     _grant_bot_to_user,
     _hash_password,
@@ -28,7 +27,6 @@ from app import (
     _sync_caddy_config,
     _user_can_access_bot,
     _verify_password,
-    _effective_status,
     allocate_port,
     create_backup,
     create_bot,
@@ -1253,8 +1251,8 @@ class TestAuthAPI:
     @pytest.fixture(autouse=True)
     def setup(self, auth_env, monkeypatch):
         """Set up test client and seed admin user."""
-        from fastapi.testclient import TestClient
         from app import app
+        from fastapi.testclient import TestClient
         monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
         _bootstrap_admin()
         self.client = TestClient(app)
@@ -1262,8 +1260,8 @@ class TestAuthAPI:
 
     def _login_client(self, username="admin", password="admin-pass"):
         """Login and return a fresh client with the session cookie set."""
-        from fastapi.testclient import TestClient
         from app import app
+        from fastapi.testclient import TestClient
         c = TestClient(app)
         r = c.post("/api/auth/login", json={"username": username, "password": password})
         assert r.status_code == 200
@@ -1852,7 +1850,7 @@ class TestSyncCaddyConfig:
 
         # Find bot routes by matching path patterns
         bot_routes = [r for r in routes if any(
-            f"/claw/" in p
+            "/claw/" in p
             for m in r.get("match", [])
             for p in m.get("path", [])
         )]
@@ -2014,8 +2012,8 @@ class TestSyncCaddyConfig:
         assert len(match_clauses) == 2
 
         # First: path match
-        assert f"/claw/mybot/*" in match_clauses[0]["path"]
-        assert f"/claw/mybot" in match_clauses[0]["path"]
+        assert "/claw/mybot/*" in match_clauses[0]["path"]
+        assert "/claw/mybot" in match_clauses[0]["path"]
 
         # Second: root WS with cookie
         ws_match = match_clauses[1]
