@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { BotActions } from "./bot-actions";
-import { statusColor, formatBytes, botUiUrl } from "@/lib/format";
+import { statusColor, formatBytes, formatTokens, botUiUrl } from "@/lib/format";
 import { useConfig } from "@/hooks/use-config";
 import { api } from "@/lib/api";
 import type { Bot } from "@/lib/types";
@@ -46,35 +47,32 @@ export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
             <Badge className={`text-[10px] px-1.5 py-0 ${statusColor(bot.status)}`}>
               {bot.status}
             </Badge>
-            <a
-              href={botUiUrl(bot, config?.portal_url)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors uppercase tracking-wide"
-              onClick={() => {
-                api.approveDevices(bot.name).catch(() => {});
-              }}
-            >
-              Open UI
-            </a>
+            {bot.status === "running" && (
+              <a
+                href={botUiUrl(bot, config?.portal_url)}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => { api.approveDevices(bot.name).catch(() => {}); }}
+              >
+                <Button size="xs" variant="secondary" className="text-[10px] h-6">
+                  Open UI
+                </Button>
+              </a>
+            )}
           </div>
         </div>
       </CardHeader>
       <CardContent className="px-4 pb-4 space-y-3">
         <div className="flex items-center gap-4 flex-wrap">
-          <MetaItem label={bot.ui_path ? "Path" : "Port"} value={bot.ui_path || `:${bot.port}`} />
+          {bot.token_usage.total_tokens > 0 && (
+            <MetaItem label="Tokens" value={formatTokens(bot.token_usage.total_tokens)} />
+          )}
           <MetaItem label="Storage" value={formatBytes(bot.storage_bytes)} />
           {bot.backup_count > 0 && (
-            <MetaItem
-              label="Backups"
-              value={String(bot.backup_count)}
-            />
+            <MetaItem label="Backups" value={String(bot.backup_count)} />
           )}
           {bot.cron_jobs.length > 0 && (
-            <MetaItem
-              label="Cron"
-              value={String(bot.cron_jobs.length)}
-            />
+            <MetaItem label="Cron" value={String(bot.cron_jobs.length)} />
           )}
           {bot.created_by && (
             <MetaItem label="Creator" value={bot.created_by} />

@@ -1,7 +1,7 @@
 "use client";
 
 import { useFleetStats } from "@/hooks/use-fleet-stats";
-import { formatMB, formatBytes, formatUptime } from "@/lib/format";
+import { formatMB, formatTokens } from "@/lib/format";
 
 function HeroStat({
   label,
@@ -44,21 +44,22 @@ export function FleetStats() {
 
   if (isLoading || !stats) {
     return (
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 px-6 pt-6">
-        {Array.from({ length: 6 }).map((_, i) => (
+      <div className="grid grid-cols-3 gap-3 px-6 pt-6">
+        {Array.from({ length: 3 }).map((_, i) => (
           <Skeleton key={i} />
         ))}
       </div>
     );
   }
 
-  const memPercent =
+  const memFreeMb = stats.total_memory_limit_mb - stats.total_memory_mb;
+  const memFreePercent =
     stats.total_memory_limit_mb > 0
-      ? ((stats.total_memory_mb / stats.total_memory_limit_mb) * 100).toFixed(0)
-      : "0";
+      ? ((memFreeMb / stats.total_memory_limit_mb) * 100).toFixed(0)
+      : "—";
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 px-6 pt-6">
+    <div className="grid grid-cols-3 gap-3 px-6 pt-6">
       <HeroStat
         label="Agents"
         value={String(stats.running_bots)}
@@ -66,29 +67,15 @@ export function FleetStats() {
         accent="text-emerald-400"
       />
       <HeroStat
-        label="CPU"
-        value={`${stats.total_cpu_percent.toFixed(1)}%`}
-        sub="total utilization"
+        label="RAM Free"
+        value={formatMB(memFreeMb)}
+        sub={`${memFreePercent}% of ${formatMB(stats.total_memory_limit_mb)}`}
+        accent={memFreeMb < 1024 ? "text-red-400" : undefined}
       />
       <HeroStat
-        label="Memory"
-        value={formatMB(stats.total_memory_mb)}
-        sub={`${memPercent}% of ${formatMB(stats.total_memory_limit_mb)}`}
-      />
-      <HeroStat
-        label="Storage"
-        value={formatBytes(stats.total_storage_bytes)}
+        label="Tokens Used"
+        value={formatTokens(stats.total_tokens_used)}
         sub="across all agents"
-      />
-      <HeroStat
-        label="Network"
-        value={formatMB(stats.total_network_tx_mb)}
-        sub={`up · ${formatMB(stats.total_network_rx_mb)} down`}
-      />
-      <HeroStat
-        label="Uptime"
-        value={formatUptime(stats.max_uptime_seconds)}
-        sub="longest running"
       />
     </div>
   );

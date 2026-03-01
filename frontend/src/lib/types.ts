@@ -6,6 +6,13 @@ export interface CronJob {
   [key: string]: unknown;
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  context_tokens: number;
+}
+
 export interface Bot {
   name: string;
   status: "running" | "exited" | "created" | string;
@@ -17,6 +24,7 @@ export interface Bot {
   backup_count: number;
   storage_bytes: number;
   cron_jobs: CronJob[];
+  token_usage: TokenUsage;
   ui_path: string | null;
 }
 
@@ -59,6 +67,7 @@ export interface BotDetail {
   gateway_token: string;
   storage_bytes: number;
   cron_jobs: CronJob[];
+  token_usage: TokenUsage;
   ui_path: string | null;
 }
 
@@ -72,6 +81,7 @@ export interface FleetStats {
   total_network_rx_mb: number;
   total_network_tx_mb: number;
   max_uptime_seconds: number;
+  total_tokens_used: number;
 }
 
 export interface CreateBotRequest {

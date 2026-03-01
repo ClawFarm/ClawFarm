@@ -2,11 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
+import { toast } from "sonner";
 import { Header } from "@/components/header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/use-auth";
 import { useBots } from "@/hooks/use-bots";
 import { api } from "@/lib/api";
@@ -46,12 +55,12 @@ function BotSelector({ selected, onChange }: { selected: string[]; onChange: (bo
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-left w-48 truncate"
+        className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-left w-full truncate"
       >
         {label}
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 w-48 max-h-48 overflow-auto rounded-md border border-border bg-card shadow-lg p-1">
+        <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto rounded-md border border-border bg-card shadow-lg p-1">
           <label className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-secondary rounded cursor-pointer">
             <input type="checkbox" checked={isAll} onChange={() => toggle("*")} />
             All bots (*)
@@ -77,15 +86,11 @@ function ChangePasswordCard() {
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError("");
-    setSuccess("");
     if (newPw !== confirmPw) {
-      setError("Passwords do not match");
+      toast.error("Passwords do not match");
       return;
     }
     try {
@@ -93,9 +98,9 @@ function ChangePasswordCard() {
       setCurrentPw("");
       setNewPw("");
       setConfirmPw("");
-      setSuccess("Password changed. You will need to log in again.");
+      toast.success("Password changed. You will need to log in again.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to change password");
+      toast.error(err instanceof Error ? err.message : "Failed to change password");
     }
   };
 
@@ -105,22 +110,20 @@ function ChangePasswordCard() {
         <CardTitle className="text-sm">Change Password</CardTitle>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3">
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Current Password</label>
-            <Input type="password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} required className="w-40" />
+            <Input type="password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} required />
           </div>
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">New Password</label>
-            <Input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} required className="w-40" />
+            <Input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} required />
           </div>
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Confirm</label>
-            <Input type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} required className="w-40" />
+            <Input type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} required />
           </div>
           <Button type="submit" size="sm">Change</Button>
-          {error && <p className="text-xs text-red-400 w-full">{error}</p>}
-          {success && <p className="text-xs text-emerald-400 w-full">{success}</p>}
         </form>
       </CardContent>
     </Card>
@@ -132,11 +135,9 @@ function AddUserForm({ onCreated }: { onCreated: () => void }) {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("user");
   const [bots, setBots] = useState<string[]>([]);
-  const [error, setError] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError("");
     try {
       await api.createUser({ username, password, role, bots });
       setUsername("");
@@ -144,8 +145,9 @@ function AddUserForm({ onCreated }: { onCreated: () => void }) {
       setRole("user");
       setBots([]);
       onCreated();
+      toast.success(`User "${username}" created`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create user");
+      toast.error(err instanceof Error ? err.message : "Failed to create user");
     }
   };
 
@@ -155,21 +157,21 @@ function AddUserForm({ onCreated }: { onCreated: () => void }) {
         <CardTitle className="text-sm">Add User</CardTitle>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3">
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Username</label>
-            <Input value={username} onChange={(e) => setUsername(e.target.value)} required className="w-36" />
+            <Input value={username} onChange={(e) => setUsername(e.target.value)} required />
           </div>
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Password</label>
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required className="w-36" />
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
           </div>
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Role</label>
             <select
               value={role}
               onChange={(e) => setRole(e.target.value)}
-              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
             >
               <option value="user">user</option>
               <option value="admin">admin</option>
@@ -180,25 +182,23 @@ function AddUserForm({ onCreated }: { onCreated: () => void }) {
             <BotSelector selected={bots} onChange={setBots} />
           </div>
           <Button type="submit" size="sm">Add</Button>
-          {error && <p className="text-xs text-red-400 w-full">{error}</p>}
         </form>
       </CardContent>
     </Card>
   );
 }
 
-function UserRow({ user, onUpdated }: { user: User; onUpdated: () => void }) {
+function UserCard({ user, onUpdated }: { user: User; onUpdated: () => void }) {
   const { user: currentUser } = useAuth();
   const [editing, setEditing] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState(user.role);
   const [newBots, setNewBots] = useState<string[]>([...user.bots]);
-  const [error, setError] = useState("");
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const isSelf = currentUser?.username === user.username;
 
   const handleSave = async () => {
-    setError("");
     try {
       const update: { password?: string; role?: string; bots?: string[] } = {};
       if (newPassword.trim()) update.password = newPassword;
@@ -212,84 +212,111 @@ function UserRow({ user, onUpdated }: { user: User; onUpdated: () => void }) {
       setNewPassword("");
       setEditing(false);
       onUpdated();
+      toast.success(`User "${user.username}" updated`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Update failed");
+      toast.error(err instanceof Error ? err.message : "Update failed");
     }
   };
 
   const handleDelete = async () => {
-    if (!confirm(`Delete user "${user.username}"?`)) return;
+    setDeleteOpen(false);
     try {
       await api.deleteUser(user.username);
       onUpdated();
+      toast.success(`User "${user.username}" deleted`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
+      toast.error(err instanceof Error ? err.message : "Delete failed");
     }
   };
 
-  if (editing) {
-    return (
-      <tr className="border-t border-border">
-        <td className="px-3 py-2 text-sm">{user.username}</td>
-        <td className="px-3 py-2">
-          <select
-            value={newRole}
-            onChange={(e) => setNewRole(e.target.value)}
-            className="h-7 rounded border border-input bg-transparent px-2 text-xs"
-          >
-            <option value="user">user</option>
-            <option value="admin">admin</option>
-          </select>
-        </td>
-        <td className="px-3 py-2">
-          <BotSelector selected={newBots} onChange={setNewBots} />
-        </td>
-        <td className="px-3 py-2">
-          <Input
-            type="password"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            placeholder="unchanged"
-            className="h-7 text-xs w-28"
-          />
-        </td>
-        <td className="px-3 py-2">
-          <div className="flex gap-1">
-            <Button size="xs" onClick={handleSave}>Save</Button>
-            <Button size="xs" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
-          </div>
-          {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
-        </td>
-      </tr>
-    );
-  }
-
   return (
-    <tr className="border-t border-border">
-      <td className="px-3 py-2 text-sm">
-        {user.username}
-        {isSelf && <span className="text-xs text-muted-foreground ml-1">(you)</span>}
-      </td>
-      <td className="px-3 py-2">
-        <Badge variant={user.role === "admin" ? "default" : "secondary"} className="text-[10px]">
-          {user.role}
-        </Badge>
-      </td>
-      <td className="px-3 py-2 text-xs text-muted-foreground">
-        {user.bots.join(", ") || "none"}
-      </td>
-      <td className="px-3 py-2 text-xs text-muted-foreground">***</td>
-      <td className="px-3 py-2">
-        <div className="flex gap-1">
-          <Button size="xs" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
-          {!isSelf && (
-            <Button size="xs" variant="ghost" className="text-red-400 hover:text-red-300" onClick={handleDelete}>
-              Delete
-            </Button>
+    <>
+      <Card className="bg-card border-border">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{user.username}</span>
+              {isSelf && <span className="text-xs text-muted-foreground">(you)</span>}
+              <Badge variant={user.role === "admin" ? "default" : "secondary"} className="text-[10px]">
+                {user.role}
+              </Badge>
+            </div>
+            <div className="flex gap-1">
+              {editing ? (
+                <>
+                  <Button size="xs" onClick={handleSave}>Save</Button>
+                  <Button size="xs" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+                </>
+              ) : (
+                <>
+                  <Button size="xs" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
+                  {!isSelf && (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      className="text-red-400 hover:text-red-300"
+                      onClick={() => setDeleteOpen(true)}
+                    >
+                      Delete
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          {editing ? (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Role</label>
+                <select
+                  value={newRole}
+                  onChange={(e) => setNewRole(e.target.value)}
+                  className="h-8 w-full rounded border border-input bg-transparent px-2 text-xs"
+                >
+                  <option value="user">user</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Bot Access</label>
+                <BotSelector selected={newBots} onChange={setNewBots} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">New Password</label>
+                <Input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="unchanged"
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+              <div>
+                <span className="text-[10px] uppercase tracking-wider block">Access</span>
+                <span className="text-foreground">{user.bots.join(", ") || "none"}</span>
+              </div>
+            </div>
           )}
-        </div>
-      </td>
-    </tr>
+        </CardContent>
+      </Card>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete &ldquo;{user.username}&rdquo;?</DialogTitle>
+            <DialogDescription>This will permanently remove this user account.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setDeleteOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDelete}>Delete</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -315,39 +342,20 @@ export default function UsersPage() {
   return (
     <div className="min-h-screen">
       <Header />
-      <div className="max-w-4xl mx-auto px-6 py-6 space-y-6">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">
         <h1 className="text-lg font-semibold">{isAdmin ? "User Management" : "Account"}</h1>
         <ChangePasswordCard />
         {isAdmin && (
           <>
             <AddUserForm onCreated={() => mutate()} />
-            <Card>
-              <CardContent className="p-0">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="text-xs text-muted-foreground">
-                      <th className="px-3 py-2 font-medium">Username</th>
-                      <th className="px-3 py-2 font-medium">Role</th>
-                      <th className="px-3 py-2 font-medium">Bot Access</th>
-                      <th className="px-3 py-2 font-medium">Password</th>
-                      <th className="px-3 py-2 font-medium">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {users?.map((u) => (
-                      <UserRow key={u.username} user={u} onUpdated={() => mutate()} />
-                    ))}
-                    {!users?.length && (
-                      <tr>
-                        <td colSpan={5} className="px-3 py-4 text-center text-sm text-muted-foreground">
-                          No users found
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </CardContent>
-            </Card>
+            <div className="space-y-2">
+              {users?.map((u) => (
+                <UserCard key={u.username} user={u} onUpdated={() => mutate()} />
+              ))}
+              {!users?.length && (
+                <p className="text-center text-sm text-muted-foreground py-4">No users found</p>
+              )}
+            </div>
           </>
         )}
       </div>

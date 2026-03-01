@@ -34,6 +34,7 @@ from app import (
     generate_config,
     get_bot_cron_jobs,
     get_bot_storage,
+    get_bot_token_usage,
     get_fleet_stats,
     list_backups,
     prune_scheduled_backups,
@@ -823,6 +824,33 @@ class TestBotCronJobs:
 
 
 # ===========================================================================
+# Token Usage
+# ===========================================================================
+class TestTokenUsage:
+    def test_token_usage_no_sessions(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot")
+        result = get_bot_token_usage("mybot")
+        assert result["total_tokens"] == 0
+
+    def test_token_usage_reads_sessions(self, bot_env):
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "mybot")
+        sessions_dir = bots_dir / "mybot" / ".openclaw" / "agents" / "main" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        sessions_data = {
+            "session-1": {"inputTokens": 1000, "outputTokens": 200, "contextTokens": 262144},
+            "session-2": {"inputTokens": 500, "outputTokens": 100, "contextTokens": 262144},
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        result = get_bot_token_usage("mybot")
+        assert result["input_tokens"] == 1500
+        assert result["output_tokens"] == 300
+        assert result["total_tokens"] == 1800
+        assert result["context_tokens"] == 262144
+
+
+# ===========================================================================
 # Fleet Stats
 # ===========================================================================
 class TestFleetStats:
@@ -870,6 +898,7 @@ class TestFleetStats:
         assert result["total_cpu_percent"] > 0
         assert result["total_memory_mb"] > 0
         assert result["total_storage_bytes"] > 0
+        assert "total_tokens_used" in result
 
     def test_fleet_stats_empty_fleet(self, bot_env, monkeypatch):
         mock_client = MagicMock()

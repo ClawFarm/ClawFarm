@@ -44,6 +44,13 @@ export function botUiUrl(
   return token ? `${base}#token=${token}` : base;
 }
 
+export function formatTokens(tokens: number): string {
+  if (tokens === 0) return "0";
+  if (tokens < 1000) return String(tokens);
+  if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}k`;
+  return `${(tokens / 1_000_000).toFixed(1)}M`;
+}
+
 export function statusColor(status: string): string {
   switch (status) {
     case "running":

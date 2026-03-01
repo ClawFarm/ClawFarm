@@ -848,6 +848,7 @@ def list_bots() -> list[dict]:
             "backup_count": len(meta.get("backups", [])),
             "storage_bytes": get_bot_storage(name),
             "cron_jobs": get_bot_cron_jobs(name),
+            "token_usage": get_bot_token_usage(name),
             "ui_path": f"/claw/{name}/" if os.environ.get("HOST_BOTS_DIR") else None,
         })
     return bots
@@ -905,6 +906,34 @@ def get_bot_cron_jobs(name: str) -> list[dict]:
         return data.get("jobs", [])
     except (json.JSONDecodeError, OSError):
         return []
+
+
+def get_bot_token_usage(name: str) -> dict:
+    """Read aggregate token usage from the bot's sessions.json."""
+    sessions_path = BOTS_DIR / name / ".openclaw" / "agents" / "main" / "sessions" / "sessions.json"
+    if not sessions_path.exists():
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "context_tokens": 0}
+    try:
+        data = json.loads(sessions_path.read_text())
+        total_in = 0
+        total_out = 0
+        context_tokens = 0
+        for session in data.values():
+            if not isinstance(session, dict):
+                continue
+            total_in += session.get("inputTokens", 0)
+            total_out += session.get("outputTokens", 0)
+            ctx = session.get("contextTokens", 0)
+            if ctx > context_tokens:
+                context_tokens = ctx
+        return {
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "total_tokens": total_in + total_out,
+            "context_tokens": context_tokens,
+        }
+    except (json.JSONDecodeError, OSError):
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "context_tokens": 0}
 
 
 def get_gateway_token(name: str) -> str:
@@ -990,10 +1019,12 @@ def get_fleet_stats() -> dict:
     total_tx = 0.0
     total_storage = 0
     max_uptime = 0
+    total_tokens = 0
 
     for c in containers:
         name = c.labels.get("openclaw.name", "")
         total_storage += get_bot_storage(name)
+        total_tokens += get_bot_token_usage(name).get("total_tokens", 0)
 
         if c.status != "running":
             continue
@@ -1045,6 +1076,7 @@ def get_fleet_stats() -> dict:
         "total_network_rx_mb": round(total_rx, 2),
         "total_network_tx_mb": round(total_tx, 2),
         "max_uptime_seconds": max_uptime,
+        "total_tokens_used": total_tokens,
     }
 
 
@@ -1093,6 +1125,7 @@ def get_bot_detail(name: str) -> dict:
         "gateway_token": gateway_token,
         "storage_bytes": get_bot_storage(name),
         "cron_jobs": get_bot_cron_jobs(name),
+        "token_usage": get_bot_token_usage(name),
         "ui_path": f"/claw/{name}/" if os.environ.get("HOST_BOTS_DIR") else None,
     }
 
