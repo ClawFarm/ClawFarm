@@ -7,7 +7,7 @@ name = "clawfarm"
 version = "0.1.0"
 description = "Self-hosted fleet manager for OpenClaw AI agents"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.135.1",
