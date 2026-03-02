@@ -863,6 +863,7 @@ class TestTokenUsage:
         _create_test_bot(bots_dir, "mybot")
         result = get_bot_token_usage("mybot")
         assert result["total_tokens"] == 0
+        assert result["model"] is None
 
     def test_token_usage_reads_sessions(self, bot_env):
         bots_dir = bot_env["bots_dir"]
@@ -870,8 +871,14 @@ class TestTokenUsage:
         sessions_dir = bots_dir / "mybot" / ".openclaw" / "agents" / "main" / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_data = {
-            "session-1": {"inputTokens": 1000, "outputTokens": 200, "contextTokens": 262144},
-            "session-2": {"inputTokens": 500, "outputTokens": 100, "contextTokens": 262144},
+            "session-1": {
+                "inputTokens": 1000, "outputTokens": 200,
+                "contextTokens": 262144, "model": "claude-sonnet-4-6",
+            },
+            "session-2": {
+                "inputTokens": 500, "outputTokens": 100,
+                "contextTokens": 262144, "model": "claude-sonnet-4-6",
+            },
         }
         (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
         result = get_bot_token_usage("mybot")
@@ -879,6 +886,7 @@ class TestTokenUsage:
         assert result["output_tokens"] == 300
         assert result["total_tokens"] == 1800
         assert result["context_tokens"] == 262144
+        assert result["model"] == "claude-sonnet-4-6"
 
 
 # ===========================================================================
@@ -933,6 +941,8 @@ class TestFleetStats:
         assert result["total_memory_mb"] > 0
         assert result["total_storage_bytes"] > 0
         assert "total_tokens_used" in result
+        assert "tokens_by_model" in result
+        assert isinstance(result["tokens_by_model"], dict)
 
     def test_fleet_stats_starting_bot(self, bot_env, monkeypatch):
         bots_dir = bot_env["bots_dir"]
@@ -965,6 +975,7 @@ class TestFleetStats:
         assert result["starting_bots"] == 0
         assert result["total_cpu_percent"] == 0
         assert result["total_storage_bytes"] == 0
+        assert result["tokens_by_model"] == {}
 
     def test_fleet_stats_rbac_filtering(self, bot_env, monkeypatch):
         """allowed_bots filters to only the specified bots."""
@@ -1000,6 +1011,37 @@ class TestFleetStats:
 
         result = get_fleet_stats(allowed_bots=None)
         assert result["total_bots"] == 2
+
+    def test_fleet_stats_tokens_by_model(self, bot_env, monkeypatch):
+        """tokens_by_model aggregates per-model token counts across bots."""
+        bots_dir = bot_env["bots_dir"]
+        # bot-a uses claude-sonnet-4-6
+        _create_test_bot(bots_dir, "bot-a")
+        sess_a = bots_dir / "bot-a" / ".openclaw" / "agents" / "main" / "sessions"
+        sess_a.mkdir(parents=True, exist_ok=True)
+        (sess_a / "sessions.json").write_text(json.dumps({
+            "s1": {"inputTokens": 1000, "outputTokens": 500, "model": "claude-sonnet-4-6"},
+        }))
+        # bot-b uses gpt-4o
+        _create_test_bot(bots_dir, "bot-b")
+        sess_b = bots_dir / "bot-b" / ".openclaw" / "agents" / "main" / "sessions"
+        sess_b.mkdir(parents=True, exist_ok=True)
+        (sess_b / "sessions.json").write_text(json.dumps({
+            "s1": {"inputTokens": 2000, "outputTokens": 1000, "model": "gpt-4o"},
+        }))
+
+        containers = [
+            self._mock_container("bot-a", status="running", port=3001),
+            self._mock_container("bot-b", status="running", port=3002),
+        ]
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = containers
+        monkeypatch.setattr("app._get_client", lambda: mock_client)
+
+        result = get_fleet_stats()
+        assert result["tokens_by_model"]["claude-sonnet-4-6"] == 1500
+        assert result["tokens_by_model"]["gpt-4o"] == 3000
+        assert result["total_tokens_used"] == 4500
 
 
 # ===========================================================================
@@ -2718,6 +2760,7 @@ class TestFunctionalEndpointsAPI:
         assert "running_bots" in data
         assert "total_memory_mb" in data
         assert "total_tokens_used" in data
+        assert data["tokens_by_model"] == {}
 
     def test_fleet_stats_with_bots(self):
         """Fleet stats aggregates across running bots."""
@@ -2751,7 +2794,7 @@ class TestFunctionalEndpointsAPI:
         mc.status = "running"
         mc.name = "openclaw-bot-test"
         mc.labels = {"openclaw.name": "test", "openclaw.port": "3001", "openclaw.bot": "true"}
-        mc.attrs = {"State": {"Health": {"Status": "healthy"}}}
+        mc.attrs = {"State": {"Health": {"Status": "healthy"}, "StartedAt": "2026-02-28T10:00:00Z"}}
         self.mock_client.containers.list.return_value = [mc]
         r = self.client.get("/api/bots")
         assert r.status_code == 200
@@ -2759,6 +2802,8 @@ class TestFunctionalEndpointsAPI:
         assert len(bots) == 1
         assert bots[0]["name"] == "test"
         assert bots[0]["status"] == "running"
+        assert bots[0]["uptime_seconds"] > 0
+        assert bots[0]["started_at"] == "2026-02-28T10:00:00Z"
 
     def test_list_bots_rbac_filtering(self):
         """Non-admin users only see bots they have access to."""

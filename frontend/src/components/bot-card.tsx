@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BotActions } from "./bot-actions";
-import { statusColor, formatBytes, formatTokens, botUiUrl } from "@/lib/format";
+import { statusColor, formatBytes, formatTokens, formatUptime, botUiUrl } from "@/lib/format";
 import { useConfig } from "@/hooks/use-config";
 import { api } from "@/lib/api";
 import type { Bot } from "@/lib/types";
@@ -66,6 +66,9 @@ export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
       </CardHeader>
       <CardContent className="px-4 pb-4 space-y-3">
         <div className="flex items-center gap-4 flex-wrap">
+          {bot.status === "running" && bot.uptime_seconds > 0 && (
+            <MetaItem label="Uptime" value={formatUptime(bot.uptime_seconds)} />
+          )}
           {bot.token_usage.total_tokens > 0 && (
             <MetaItem label="Tokens" value={formatTokens(bot.token_usage.total_tokens)} />
           )}

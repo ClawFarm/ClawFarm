@@ -11,6 +11,7 @@ export interface TokenUsage {
   output_tokens: number;
   total_tokens: number;
   context_tokens: number;
+  model: string | null;
 }
 
 export interface Bot {
@@ -27,6 +28,8 @@ export interface Bot {
   storage_bytes: number;
   cron_jobs: CronJob[];
   token_usage: TokenUsage;
+  uptime_seconds: number;
+  started_at: string | null;
   ui_path: string | null;
 }
 
@@ -86,6 +89,7 @@ export interface FleetStats {
   total_network_tx_mb: number;
   max_uptime_seconds: number;
   total_tokens_used: number;
+  tokens_by_model: Record<string, number>;
 }
 
 export interface Template {

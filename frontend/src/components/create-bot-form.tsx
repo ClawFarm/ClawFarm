@@ -149,15 +149,29 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
             }}
             rows={3}
           />
-          <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              checked={networkIsolation}
-              onChange={(e) => setNetworkIsolation(e.target.checked)}
-              className="rounded border-border"
-            />
-            Network isolation
-            <span className="text-xs text-muted-foreground/60">(block LAN access)</span>
+          <label className="flex items-center gap-3 cursor-pointer group">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={networkIsolation}
+              onClick={() => setNetworkIsolation(!networkIsolation)}
+              className={cn(
+                "relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                networkIsolation ? "bg-emerald-500" : "bg-secondary",
+              )}
+            >
+              <span
+                className={cn(
+                  "pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
+                  networkIsolation ? "translate-x-4" : "translate-x-0",
+                )}
+              />
+            </button>
+            <div className="flex flex-col">
+              <span className="text-sm text-foreground leading-tight">Network isolation</span>
+              <span className="text-xs text-muted-foreground/60 leading-tight">Block LAN access from this agent</span>
+            </div>
           </label>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex gap-2">

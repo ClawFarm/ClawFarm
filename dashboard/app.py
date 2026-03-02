@@ -991,6 +991,20 @@ def list_bots() -> list[dict]:
     for c in containers:
         name = c.labels.get("openclaw.name", "")
         meta = read_meta(name)
+
+        # Compute uptime for running containers
+        uptime_seconds = 0
+        started_at = None
+        if c.status == "running":
+            raw = c.attrs.get("State", {}).get("StartedAt", "")
+            if raw:
+                try:
+                    start = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    started_at = raw
+                    uptime_seconds = int((datetime.now(timezone.utc) - start).total_seconds())
+                except (ValueError, TypeError):
+                    pass
+
         bots.append({
             "name": name,
             "status": _effective_status(c),
@@ -1005,6 +1019,8 @@ def list_bots() -> list[dict]:
             "storage_bytes": get_bot_storage(name),
             "cron_jobs": get_bot_cron_jobs(name),
             "token_usage": get_bot_token_usage(name),
+            "uptime_seconds": uptime_seconds,
+            "started_at": started_at,
             "ui_path": f"/claw/{name}/" if os.environ.get("HOST_BOTS_DIR") else None,
         })
     return bots
@@ -1073,12 +1089,13 @@ def get_bot_token_usage(name: str) -> dict:
     """Read aggregate token usage from the bot's sessions.json."""
     sessions_path = BOTS_DIR / name / ".openclaw" / "agents" / "main" / "sessions" / "sessions.json"
     if not sessions_path.exists():
-        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "context_tokens": 0}
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "context_tokens": 0, "model": None}
     try:
         data = json.loads(sessions_path.read_text())
         total_in = 0
         total_out = 0
         context_tokens = 0
+        model = None
         for session in data.values():
             if not isinstance(session, dict):
                 continue
@@ -1087,14 +1104,17 @@ def get_bot_token_usage(name: str) -> dict:
             ctx = session.get("contextTokens", 0)
             if ctx > context_tokens:
                 context_tokens = ctx
+            if session.get("model"):
+                model = session["model"]
         return {
             "input_tokens": total_in,
             "output_tokens": total_out,
             "total_tokens": total_in + total_out,
             "context_tokens": context_tokens,
+            "model": model,
         }
     except (json.JSONDecodeError, OSError):
-        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "context_tokens": 0}
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "context_tokens": 0, "model": None}
 
 
 def get_gateway_token(name: str) -> str:
@@ -1169,9 +1189,11 @@ def get_bot_stats(name: str) -> dict:
 def _collect_bot_stats(c) -> dict:
     """Collect stats for a single bot container. Runs in thread pool."""
     name = c.labels.get("openclaw.name", "")
+    token_usage = get_bot_token_usage(name)
     result = {
         "storage": get_bot_storage(name),
-        "tokens": get_bot_token_usage(name).get("total_tokens", 0),
+        "tokens": token_usage.get("total_tokens", 0),
+        "token_model": token_usage.get("model"),
         "running": 0, "starting": 0,
         "cpu": 0.0, "mem": 0.0, "mem_limit": 0.0,
         "rx": 0.0, "tx": 0.0, "uptime": 0,
@@ -1241,10 +1263,18 @@ def get_fleet_stats(allowed_bots: set[str] | None = None) -> dict:
             "total_memory_limit_mb": 0.0, "total_storage_bytes": 0,
             "total_network_rx_mb": 0.0, "total_network_tx_mb": 0.0,
             "max_uptime_seconds": 0, "total_tokens_used": 0,
+            "tokens_by_model": {},
         }
 
     with ThreadPoolExecutor(max_workers=min(len(containers), 8)) as pool:
         results = list(pool.map(_collect_bot_stats, containers))
+
+    tokens_by_model: dict[str, int] = {}
+    for r in results:
+        model = r.get("token_model")
+        tokens = r.get("tokens", 0)
+        if model and tokens > 0:
+            tokens_by_model[model] = tokens_by_model.get(model, 0) + tokens
 
     return {
         "total_bots": len(containers),
@@ -1258,6 +1288,7 @@ def get_fleet_stats(allowed_bots: set[str] | None = None) -> dict:
         "total_network_tx_mb": round(sum(r["tx"] for r in results), 2),
         "max_uptime_seconds": max((r["uptime"] for r in results), default=0),
         "total_tokens_used": sum(r["tokens"] for r in results),
+        "tokens_by_model": tokens_by_model,
     }
 
 
