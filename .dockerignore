@@ -1,0 +1,14 @@
+.git
+.venv
+.env
+bots/
+backups/
+certs/
+screenshots/
+frontend/node_modules/
+frontend/.next/
+__pycache__/
+*.pyc
+*.log
+.claude/
+.playwright-mcp/

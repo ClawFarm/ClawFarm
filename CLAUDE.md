@@ -10,7 +10,6 @@ botfarm/
 │   ├── app.py              # All backend logic: bot lifecycle, backup, metrics, API routes
 │   ├── entrypoint.sh       # Docker entrypoint: auto-detects Docker socket GID
 │   ├── Dockerfile
-│   ├── requirements.txt
 │   └── tests/test_fleet.py # ~100 unit + integration tests (pytest)
 ├── frontend/               # Next.js 16 dashboard UI (React 19, Tailwind 4, shadcn/ui)
 │   ├── src/app/            # Pages: / (dashboard), /bots/[name] (detail)
@@ -31,7 +30,7 @@ botfarm/
 ├── docker-compose.yml      # Production: pulls pre-built images from GHCR
 ├── docker-compose.dev.yml  # Development: builds from local source
 ├── Caddyfile               # Initial Caddy config (overwritten by admin API)
-├── pyproject.toml          # Ruff linter config
+├── pyproject.toml          # Python deps, ruff + pytest config
 ├── .github/workflows/      # CI (lint + test + build) and release (Docker publish)
 ├── CONTRIBUTING.md         # Contributor guidelines
 ├── RELEASING.md            # Release process docs
@@ -49,7 +48,7 @@ cp .env.example .env   # Edit with your LLM endpoint details
 
 # 2. Backend
 python -m venv .venv && source .venv/bin/activate
-pip install -r dashboard/requirements.txt
+uv pip install -e ".[dev]"
 cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 
 # 3. Frontend (separate terminal)

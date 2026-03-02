@@ -1,7 +1,8 @@
 services:
   dashboard:
     build:
-      context: ./dashboard
+      context: .
+      dockerfile: dashboard/Dockerfile
       network: host
     expose:
       - "8080"

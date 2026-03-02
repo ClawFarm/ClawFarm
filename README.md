@@ -179,7 +179,7 @@ docker compose -f docker-compose.dev.yml up --build -d
 # Or run services directly for hot-reload:
 # Backend
 python -m venv .venv && source .venv/bin/activate
-pip install -r dashboard/requirements.txt
+uv pip install -e ".[dev]"
 cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 
 # Frontend (separate terminal)
