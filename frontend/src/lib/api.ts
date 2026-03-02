@@ -27,12 +27,7 @@ export interface PortalConfig {
 }
 
 export const api = {
-  // Auth
-  login: (username: string, password: string) =>
-    request<{ ok: boolean; username: string; role: string }>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    }),
+  // Auth (login uses raw fetch in login/page.tsx to avoid 401 redirect loop)
   logout: () =>
     request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   getMe: () =>
