@@ -1,8 +1,26 @@
-# ClawFarm
+<p align="center">
+  <img src="logo.svg" width="80" alt="ClawFarm logo">
+</p>
 
-[Website](https://clawfarm.dev) | [GitHub](https://github.com/clawfarm/clawfarm)
+<h1 align="center">ClawFarm</h1>
 
-Self-hosted fleet manager for [OpenClaw](https://github.com/openclaw/openclaw) AI agents.
+<p align="center">
+  Self-hosted fleet manager for <a href="https://github.com/openclaw/openclaw">OpenClaw</a> AI agents.
+</p>
+
+<p align="center">
+  <a href="https://github.com/clawfarm/clawfarm/actions/workflows/ci.yml"><img src="https://github.com/clawfarm/clawfarm/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/clawfarm/clawfarm" alt="License"></a>
+  <a href="https://github.com/clawfarm/clawfarm/releases"><img src="https://img.shields.io/github/v/release/clawfarm/clawfarm" alt="Release"></a>
+</p>
+
+<p align="center">
+  <a href="https://clawfarm.dev">Website</a> · <a href="https://github.com/clawfarm/clawfarm">GitHub</a>
+</p>
+
+<p align="center">
+  <img src="assets/screenshot-dashboard.png" width="800" alt="ClawFarm dashboard showing five running AI agents">
+</p>
 
 OpenClaw is a powerful autonomous AI agent, but it's designed as a **single-operator personal assistant** — one gateway process, one admin, CLI-driven setup. Running multiple agents means manually provisioning each instance, managing separate configs, ports, and TLS certs, with no isolation between them.
 
