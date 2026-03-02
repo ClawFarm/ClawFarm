@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ".[dev]"
-      - run: cd dashboard && python -m pytest tests/test_fleet.py -v
+      - run: pytest -v
 
   frontend-lint:
     runs-on: ubuntu-latest
