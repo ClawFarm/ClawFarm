@@ -30,7 +30,7 @@ docker compose -f docker-compose.dev.yml logs dashboard | head -20
 ```bash
 # Backend
 python -m venv .venv && source .venv/bin/activate
-pip install -r dashboard/requirements.txt
+uv pip install -e ".[dev]"   # or: pip install -e ".[dev]"
 cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 
 # Frontend (separate terminal)
@@ -39,10 +39,9 @@ cd frontend && npm install && npm run dev
 
 ## Pre-commit Hooks
 
-The repo uses [pre-commit](https://pre-commit.com/) to run linters and tests before each commit:
+The repo uses [pre-commit](https://pre-commit.com/) to run linters and tests before each commit. It's included in the `[dev]` extras:
 
 ```bash
-uv pip install pre-commit   # or: pip install pre-commit
 pre-commit install           # one-time setup
 ```
 
