@@ -99,6 +99,10 @@ def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
 
 
+# Dummy hash used to burn constant time when user doesn't exist (prevents timing enumeration)
+_DUMMY_HASH = bcrypt.hashpw(b"dummy", bcrypt.gensalt(rounds=12)).decode()
+
+
 def _verify_password(password: str, password_hash: str) -> bool:
     try:
         return bcrypt.checkpw(password.encode(), password_hash.encode())
@@ -180,6 +184,16 @@ def _cleanup_expired_sessions() -> int:
     for t in expired:
         del SESSIONS[t]
     return len(expired)
+
+
+def _cleanup_stale_rate_limits() -> int:
+    """Remove stale entries from _login_attempts. Returns count removed."""
+    now = time.time()
+    with _login_lock:
+        stale = [ip for ip, ts in _login_attempts.items() if all(now - t >= 300 for t in ts)]
+        for ip in stale:
+            del _login_attempts[ip]
+    return len(stale)
 
 
 def _invalidate_user_sessions(username: str) -> int:
@@ -1625,8 +1639,13 @@ def _sync_caddy_config() -> None:
         if tls_app:
             apps["tls"] = tls_app
 
+        # Note: Caddy disables origin enforcement when the admin API listens on
+        # an open interface (":2019"), so the "origins" field is documentation only.
+        # The real protection is Docker network isolation — port 2019 is not
+        # published to the host, so only containers on the compose network can
+        # reach the admin API.
         config = {
-            "admin": {"listen": ":2019"},
+            "admin": {"listen": ":2019", "origins": ["dashboard"]},
             "apps": apps,
         }
 
@@ -1696,6 +1715,23 @@ def prune_scheduled_backups(name: str, keep: int | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Housekeeping scheduler (session + rate-limit cleanup)
+# ---------------------------------------------------------------------------
+_housekeeping_stop_event = threading.Event()
+_HOUSEKEEPING_INTERVAL = 1800  # 30 minutes
+
+
+def _housekeeping_scheduler():
+    """Periodically clean up expired sessions and stale rate-limit entries."""
+    while not _housekeeping_stop_event.wait(_HOUSEKEEPING_INTERVAL):
+        try:
+            _cleanup_expired_sessions()
+            _cleanup_stale_rate_limits()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Backup scheduler
 # ---------------------------------------------------------------------------
 _backup_stop_event = threading.Event()
@@ -1730,7 +1766,16 @@ def _backup_scheduler():
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # Bootstrap admin user on first run
-    if not AUTH_DISABLED:
+    if AUTH_DISABLED:
+        log.warning(
+            "\n"
+            "  ┌─────────────────────────────────────────────┐\n"
+            "  │  WARNING: AUTH_DISABLED=true                 │\n"
+            "  │  All endpoints are accessible without login. │\n"
+            "  │  Do NOT use this setting in production.      │\n"
+            "  └─────────────────────────────────────────────┘"
+        )
+    else:
         _bootstrap_admin()
     # Ensure Caddy is connected to all existing bot networks on startup
     if os.environ.get("HOST_BOTS_DIR"):
@@ -1761,12 +1806,16 @@ async def _lifespan(app: FastAPI):
             except (json.JSONDecodeError, OSError):
                 pass
     _sync_caddy_config()
+    # Start housekeeping scheduler (session + rate-limit cleanup every 30 min)
+    _housekeeping_stop_event.clear()
+    threading.Thread(target=_housekeeping_scheduler, daemon=True, name="housekeeping").start()
     # Start backup scheduler thread
     if BACKUP_INTERVAL_SECONDS > 0:
         _backup_stop_event.clear()
         t = threading.Thread(target=_backup_scheduler, daemon=True, name="backup-scheduler")
         t.start()
     yield
+    _housekeeping_stop_event.set()
     _backup_stop_event.set()
 
 
@@ -1784,6 +1833,8 @@ _cors_credentials = False
 if PORTAL_URL:
     _cors_origins = [PORTAL_URL.rstrip("/")]
     _cors_credentials = True
+elif _in_compose and TLS_MODE != "off":
+    log.warning("PORTAL_URL not set — CORS allows all origins. Set PORTAL_URL for production.")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1853,7 +1904,9 @@ async def api_auth_login(req: LoginRequest, request: Request, response: Response
     _check_login_rate(ip)
     users = _load_users()
     user = users.get(req.username)
-    if not user or not _verify_password(req.password, user["password_hash"]):
+    # Always run bcrypt to prevent timing-based user enumeration
+    valid = _verify_password(req.password, user["password_hash"] if user else _DUMMY_HASH)
+    if not user or not valid:
         _record_failed_login(ip)
         raise HTTPException(status_code=401, detail="Invalid username or password")
     # Clear failed attempts on success

@@ -1,8 +1,10 @@
 # Deny-by-default: returns 503 until the dashboard pushes dynamic config.
 # This prevents unauthenticated access during the startup window.
-# Caddy admin API stays open so the dashboard can push the real config.
+# Caddy admin API restricted to requests with Origin: dashboard.
 {
-	admin :2019
+	admin :2019 {
+		origins dashboard
+	}
 }
 
 :8080 {
