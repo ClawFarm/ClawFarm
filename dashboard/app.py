@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -325,14 +326,31 @@ def list_templates() -> list[dict]:
         if soul_path.exists():
             soul_preview = soul_path.read_text()[:200]
         description = ""
+        env_hint = ""
         meta_path = d / "template.meta.json"
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text())
                 description = meta.get("description", "")
+                env_hint = meta.get("env_hint", "")
             except (json.JSONDecodeError, OSError):
                 pass
-        templates.append({"name": d.name, "soul_preview": soul_preview, "description": description})
+        config_preview = ""
+        tmpl_path = d / "openclaw.template.json"
+        if tmpl_path.exists():
+            try:
+                raw = tmpl_path.read_text()
+                resolved = _resolve_template(raw)
+                config_preview = json.dumps(json.loads(resolved), indent=2)
+            except (json.JSONDecodeError, OSError):
+                config_preview = ""
+        templates.append({
+            "name": d.name,
+            "soul_preview": soul_preview,
+            "description": description,
+            "env_hint": env_hint,
+            "config_preview": config_preview,
+        })
     return templates
 
 
@@ -1115,84 +1133,98 @@ def get_bot_stats(name: str) -> dict:
     }
 
 
-def get_fleet_stats() -> dict:
-    """Aggregate stats across all bot containers."""
+def _collect_bot_stats(c) -> dict:
+    """Collect stats for a single bot container. Runs in thread pool."""
+    name = c.labels.get("openclaw.name", "")
+    result = {
+        "storage": get_bot_storage(name),
+        "tokens": get_bot_token_usage(name).get("total_tokens", 0),
+        "running": 0, "starting": 0,
+        "cpu": 0.0, "mem": 0.0, "mem_limit": 0.0,
+        "rx": 0.0, "tx": 0.0, "uptime": 0,
+    }
+
+    if c.status != "running":
+        return result
+    effective = _effective_status(c)
+    if effective == "starting":
+        result["starting"] = 1
+    elif effective == "running":
+        result["running"] = 1
+
+    try:
+        stats = c.stats(stream=False)
+        attrs = c.attrs
+
+        # CPU
+        cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
+                    stats["precpu_stats"]["cpu_usage"]["total_usage"]
+        system_delta = stats["cpu_stats"]["system_cpu_usage"] - \
+                       stats["precpu_stats"]["system_cpu_usage"]
+        num_cpus = stats["cpu_stats"].get("online_cpus", 1)
+        if system_delta > 0:
+            result["cpu"] = cpu_delta / system_delta * num_cpus * 100.0
+
+        # Memory
+        result["mem"] = stats["memory_stats"].get("usage", 0) / (1024 * 1024)
+        result["mem_limit"] = stats["memory_stats"].get("limit", 0) / (1024 * 1024)
+
+        # Network
+        networks = stats.get("networks", {})
+        result["rx"] = sum(n.get("rx_bytes", 0) for n in networks.values()) / (1024 * 1024)
+        result["tx"] = sum(n.get("tx_bytes", 0) for n in networks.values()) / (1024 * 1024)
+
+        # Uptime
+        started_at = attrs.get("State", {}).get("StartedAt", "")
+        if started_at:
+            try:
+                start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                result["uptime"] = int((datetime.now(timezone.utc) - start).total_seconds())
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        pass
+
+    return result
+
+
+def get_fleet_stats(allowed_bots: set[str] | None = None) -> dict:
+    """Aggregate stats across bot containers.
+
+    Args:
+        allowed_bots: If set, only include these bot names (RBAC filtering).
+                      None means all bots (admin / wildcard user).
+    """
     client = _get_client()
     containers = client.containers.list(all=True, filters={"label": "openclaw.bot=true"})
 
-    total_bots = len(containers)
-    running_bots = 0
-    starting_bots = 0
-    total_cpu = 0.0
-    total_mem = 0.0
-    total_mem_limit = 0.0
-    total_rx = 0.0
-    total_tx = 0.0
-    total_storage = 0
-    max_uptime = 0
-    total_tokens = 0
+    if allowed_bots is not None:
+        containers = [c for c in containers if c.labels.get("openclaw.name", "") in allowed_bots]
 
-    for c in containers:
-        name = c.labels.get("openclaw.name", "")
-        total_storage += get_bot_storage(name)
-        total_tokens += get_bot_token_usage(name).get("total_tokens", 0)
+    if not containers:
+        return {
+            "total_bots": 0, "running_bots": 0, "starting_bots": 0,
+            "total_cpu_percent": 0.0, "total_memory_mb": 0.0,
+            "total_memory_limit_mb": 0.0, "total_storage_bytes": 0,
+            "total_network_rx_mb": 0.0, "total_network_tx_mb": 0.0,
+            "max_uptime_seconds": 0, "total_tokens_used": 0,
+        }
 
-        if c.status != "running":
-            continue
-        effective = _effective_status(c)
-        if effective == "starting":
-            starting_bots += 1
-        elif effective == "running":
-            running_bots += 1
-
-        try:
-            stats = c.stats(stream=False)
-            attrs = c.attrs
-
-            # CPU
-            cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
-                        stats["precpu_stats"]["cpu_usage"]["total_usage"]
-            system_delta = stats["cpu_stats"]["system_cpu_usage"] - \
-                           stats["precpu_stats"]["system_cpu_usage"]
-            num_cpus = stats["cpu_stats"].get("online_cpus", 1)
-            if system_delta > 0:
-                total_cpu += cpu_delta / system_delta * num_cpus * 100.0
-
-            # Memory
-            mem_usage = stats["memory_stats"].get("usage", 0)
-            mem_limit = stats["memory_stats"].get("limit", 0)
-            total_mem += mem_usage / (1024 * 1024)
-            total_mem_limit += mem_limit / (1024 * 1024)
-
-            # Network
-            networks = stats.get("networks", {})
-            total_rx += sum(n.get("rx_bytes", 0) for n in networks.values()) / (1024 * 1024)
-            total_tx += sum(n.get("tx_bytes", 0) for n in networks.values()) / (1024 * 1024)
-
-            # Uptime
-            started_at = attrs.get("State", {}).get("StartedAt", "")
-            if started_at:
-                try:
-                    start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-                    uptime = int((datetime.now(timezone.utc) - start).total_seconds())
-                    max_uptime = max(max_uptime, uptime)
-                except (ValueError, TypeError):
-                    pass
-        except Exception:
-            continue
+    with ThreadPoolExecutor(max_workers=min(len(containers), 8)) as pool:
+        results = list(pool.map(_collect_bot_stats, containers))
 
     return {
-        "total_bots": total_bots,
-        "running_bots": running_bots,
-        "starting_bots": starting_bots,
-        "total_cpu_percent": round(total_cpu, 2),
-        "total_memory_mb": round(total_mem, 1),
-        "total_memory_limit_mb": round(total_mem_limit, 1),
-        "total_storage_bytes": total_storage,
-        "total_network_rx_mb": round(total_rx, 2),
-        "total_network_tx_mb": round(total_tx, 2),
-        "max_uptime_seconds": max_uptime,
-        "total_tokens_used": total_tokens,
+        "total_bots": len(containers),
+        "running_bots": sum(r["running"] for r in results),
+        "starting_bots": sum(r["starting"] for r in results),
+        "total_cpu_percent": round(sum(r["cpu"] for r in results), 2),
+        "total_memory_mb": round(sum(r["mem"] for r in results), 1),
+        "total_memory_limit_mb": round(sum(r["mem_limit"] for r in results), 1),
+        "total_storage_bytes": sum(r["storage"] for r in results),
+        "total_network_rx_mb": round(sum(r["rx"] for r in results), 2),
+        "total_network_tx_mb": round(sum(r["tx"] for r in results), 2),
+        "max_uptime_seconds": max((r["uptime"] for r in results), default=0),
+        "total_tokens_used": sum(r["tokens"] for r in results),
     }
 
 
@@ -2130,7 +2162,10 @@ async def api_list_templates(session: dict = Depends(_require_session)):
 @app.get("/api/fleet/stats")
 async def api_fleet_stats(session: dict = Depends(_require_session)):
     try:
-        return get_fleet_stats()
+        allowed = None
+        if session["role"] != "admin" and "*" not in session.get("bots", []):
+            allowed = set(session.get("bots", []))
+        return get_fleet_stats(allowed_bots=allowed)
     except Exception as e:
         log.warning("fleet_stats failed: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")

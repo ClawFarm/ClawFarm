@@ -91,6 +91,8 @@ export interface Template {
   name: string;
   soul_preview: string;
   description: string;
+  env_hint: string;
+  config_preview: string;
 }
 
 export interface CreateBotRequest {

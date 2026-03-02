@@ -1,6 +1,7 @@
 "use client";
 
 import { useFleetStats } from "@/hooks/use-fleet-stats";
+import { useAuth } from "@/hooks/use-auth";
 import { formatMB, formatTokens } from "@/lib/format";
 
 function HeroStat({
@@ -41,6 +42,8 @@ function Skeleton() {
 
 export function FleetStats() {
   const { stats, isLoading } = useFleetStats();
+  const { user } = useAuth();
+  const isLimitedUser = user && user.role !== "admin" && !user.bots.includes("*");
 
   if (isLoading || !stats) {
     return (
@@ -79,7 +82,7 @@ export function FleetStats() {
       <HeroStat
         label="Tokens Used"
         value={formatTokens(stats.total_tokens_used)}
-        sub="across all agents"
+        sub={isLimitedUser ? "across your agents" : "across all agents"}
       />
     </div>
   );

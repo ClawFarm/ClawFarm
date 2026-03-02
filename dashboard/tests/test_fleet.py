@@ -962,6 +962,41 @@ class TestFleetStats:
         assert result["total_cpu_percent"] == 0
         assert result["total_storage_bytes"] == 0
 
+    def test_fleet_stats_rbac_filtering(self, bot_env, monkeypatch):
+        """allowed_bots filters to only the specified bots."""
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "bot-a")
+        _create_test_bot(bots_dir, "bot-b")
+
+        containers = [
+            self._mock_container("bot-a", status="running", port=3001),
+            self._mock_container("bot-b", status="running", port=3002),
+        ]
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = containers
+        monkeypatch.setattr("app._get_client", lambda: mock_client)
+
+        result = get_fleet_stats(allowed_bots={"bot-a"})
+        assert result["total_bots"] == 1
+        assert result["running_bots"] == 1
+
+    def test_fleet_stats_rbac_none_means_all(self, bot_env, monkeypatch):
+        """allowed_bots=None returns all bots (admin behavior)."""
+        bots_dir = bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "bot-a")
+        _create_test_bot(bots_dir, "bot-b")
+
+        containers = [
+            self._mock_container("bot-a", status="running", port=3001),
+            self._mock_container("bot-b", status="running", port=3002),
+        ]
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = containers
+        monkeypatch.setattr("app._get_client", lambda: mock_client)
+
+        result = get_fleet_stats(allowed_bots=None)
+        assert result["total_bots"] == 2
+
 
 # ===========================================================================
 # Effective Status
@@ -1607,6 +1642,32 @@ class TestListTemplates:
         templates = list_templates()
         names = [t["name"] for t in templates]
         assert ".hidden" not in names
+
+    def test_env_hint(self, bot_env):
+        meta = {"description": "Test", "env_hint": "Requires TEST_KEY"}
+        (bot_env["template_dir"] / "default" / "template.meta.json").write_text(json.dumps(meta))
+        templates = list_templates()
+        default = next(t for t in templates if t["name"] == "default")
+        assert default["env_hint"] == "Requires TEST_KEY"
+
+    def test_env_hint_missing_meta(self, bot_env):
+        templates = list_templates()
+        default = next(t for t in templates if t["name"] == "default")
+        assert default["env_hint"] == ""
+
+    def test_config_preview(self, bot_env):
+        templates = list_templates()
+        default = next(t for t in templates if t["name"] == "default")
+        assert default["config_preview"]
+        parsed = json.loads(default["config_preview"])
+        assert "agents" in parsed or "models" in parsed
+
+    def test_config_preview_resolves_placeholders(self, bot_env):
+        templates = list_templates()
+        default = next(t for t in templates if t["name"] == "default")
+        # bot_env sets LLM_MODEL=test-model — should be resolved in preview
+        assert "test-model" in default["config_preview"]
+        assert "{{LLM_MODEL}}" not in default["config_preview"]
 
 
 class TestTemplateInCreateFlow:
@@ -2708,3 +2769,40 @@ class TestFunctionalEndpointsAPI:
         names = [b["name"] for b in r.json()]
         assert "allowed-bot" in names
         assert "secret-bot" not in names
+
+    def test_fleet_stats_rbac_filtering(self):
+        """Non-admin users only see fleet stats for their bots."""
+        import app
+        self.monkeypatch.setattr(app, "AUTH_DISABLED", False)
+        from app import _bootstrap_admin, _hash_password, _load_users, _save_users
+        self.monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+        _bootstrap_admin()
+        users = _load_users()
+        users["bob"] = {"password_hash": _hash_password("bob-pass"), "role": "user", "bots": ["my-bot"]}
+        _save_users(users)
+        self.client.post("/api/auth/login", json={"username": "bob", "password": "bob-pass"})
+        # Mock two containers — bob can only see "my-bot"
+        bots_dir = self.bot_env["bots_dir"]
+        _create_test_bot(bots_dir, "my-bot")
+        _create_test_bot(bots_dir, "secret-bot")
+        containers = []
+        for name in ["my-bot", "secret-bot"]:
+            mc = MagicMock()
+            mc.status = "running"
+            mc.name = f"openclaw-bot-{name}"
+            mc.labels = {"openclaw.name": name, "openclaw.port": "3001", "openclaw.bot": "true"}
+            mc.attrs = {"State": {"Health": {"Status": "healthy"}, "StartedAt": "2025-01-01T00:00:00Z"}}
+            mc.stats.return_value = {
+                "cpu_stats": {"cpu_usage": {"total_usage": 100}, "system_cpu_usage": 1000, "online_cpus": 1},
+                "precpu_stats": {"cpu_usage": {"total_usage": 50}, "system_cpu_usage": 500},
+                "memory_stats": {"usage": 1048576, "limit": 8388608},
+                "networks": {},
+            }
+            containers.append(mc)
+        self.mock_client.containers.list.return_value = containers
+        r = self.client.get("/api/fleet/stats")
+        assert r.status_code == 200
+        data = r.json()
+        # Bob should only see stats for 1 bot (my-bot), not 2
+        assert data["total_bots"] == 1
+        assert data["running_bots"] == 1

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { Template } from "@/lib/types";
 
 export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
@@ -16,12 +17,12 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
 
+  // Pre-fetch templates on mount so they're ready when the form opens
   useEffect(() => {
-    if (open) {
-      api.listTemplates().then(setTemplates).catch(() => {});
-    }
-  }, [open]);
+    api.listTemplates().then(setTemplates).catch(() => {});
+  }, []);
 
   function handleTemplateChange(name: string) {
     setTemplate(name);
@@ -42,6 +43,7 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
       setSoul("");
       setTemplate("default");
       setSoulCustomized(false);
+      setShowConfig(false);
       setOpen(false);
       onCreated();
     } catch (err) {
@@ -50,6 +52,8 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
       setLoading(false);
     }
   }
+
+  const selectedTemplate = templates.find((t) => t.name === template);
 
   return (
     <div className="px-6 pt-5">
@@ -63,10 +67,65 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
       ) : (
         <form
           onSubmit={handleSubmit}
-          className="rounded-lg border border-border bg-card p-4 space-y-3 max-w-xl"
+          className="rounded-lg border border-border bg-card p-4 space-y-3 max-w-2xl"
         >
           <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-1">
             New Agent
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Template</label>
+            {templates.length === 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="h-20 rounded-lg bg-secondary animate-pulse" />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {templates.map((t) => (
+                  <button
+                    key={t.name}
+                    type="button"
+                    onClick={() => handleTemplateChange(t.name)}
+                    className={cn(
+                      "rounded-lg border p-3 text-left transition-colors",
+                      template === t.name
+                        ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                        : "border-border bg-card/50 hover:border-muted-foreground/30"
+                    )}
+                  >
+                    <div className="text-sm font-medium truncate">{t.name}</div>
+                    {t.description && (
+                      <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
+                        {t.description}
+                      </div>
+                    )}
+                    {t.env_hint && (
+                      <div className="text-[10px] text-muted-foreground/60 mt-1 truncate">
+                        {t.env_hint}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {selectedTemplate?.config_preview && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowConfig(!showConfig)}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1 mt-1"
+                >
+                  <span className="text-[10px]">{showConfig ? "▼" : "▶"}</span>
+                  Config preview
+                </button>
+                {showConfig && (
+                  <pre className="mt-1.5 rounded-md bg-secondary/50 border border-border p-3 text-xs text-muted-foreground overflow-x-auto max-h-64 overflow-y-auto">
+                    {selectedTemplate.config_preview}
+                  </pre>
+                )}
+              </div>
+            )}
           </div>
           <Input
             placeholder="Agent name (e.g. research-bot)"
@@ -74,26 +133,6 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
             onChange={(e) => setName(e.target.value)}
             autoFocus
           />
-          {templates.length > 1 && (
-            <div className="space-y-1">
-              <select
-                value={template}
-                onChange={(e) => handleTemplateChange(e.target.value)}
-                className="w-full rounded-md border border-border bg-secondary px-3 py-2 text-sm text-foreground"
-              >
-                {templates.map((t) => (
-                  <option key={t.name} value={t.name}>
-                    {t.description ? `${t.name} — ${t.description}` : t.name}
-                  </option>
-                ))}
-              </select>
-              {templates.find((t) => t.name === template)?.description && (
-                <p className="text-xs text-muted-foreground px-1">
-                  {templates.find((t) => t.name === template)?.description}
-                </p>
-              )}
-            </div>
-          )}
           <Textarea
             placeholder="SOUL.md — custom personality (optional)"
             value={soul}
@@ -114,6 +153,7 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
               size="sm"
               onClick={() => {
                 setOpen(false);
+                setShowConfig(false);
                 setError("");
               }}
             >
