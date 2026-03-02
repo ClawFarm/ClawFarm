@@ -22,6 +22,7 @@ export interface Bot {
   created_by: string | null;
   created_at: string | null;
   template: string | null;
+  network_isolation: boolean;
   backup_count: number;
   storage_bytes: number;
   cron_jobs: CronJob[];
@@ -93,6 +94,7 @@ export interface Template {
   description: string;
   env_hint: string;
   config_preview: string;
+  missing_vars: string[];
 }
 
 export interface CreateBotRequest {
@@ -100,6 +102,7 @@ export interface CreateBotRequest {
   soul?: string;
   extra_config?: Record<string, unknown>;
   template?: string;
+  network_isolation?: boolean;
 }
 
 export interface User {

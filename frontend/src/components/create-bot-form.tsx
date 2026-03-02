@@ -14,6 +14,7 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
   const [template, setTemplate] = useState("default");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [soulCustomized, setSoulCustomized] = useState(false);
+  const [networkIsolation, setNetworkIsolation] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
@@ -38,11 +39,12 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
     setLoading(true);
     setError("");
     try {
-      await api.createBot({ name, soul: soul || undefined, template });
+      await api.createBot({ name, soul: soul || undefined, template, network_isolation: networkIsolation });
       setName("");
       setSoul("");
       setTemplate("default");
       setSoulCustomized(false);
+      setNetworkIsolation(true);
       setShowConfig(false);
       setOpen(false);
       onCreated();
@@ -109,6 +111,11 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
                 ))}
               </div>
             )}
+            {selectedTemplate?.missing_vars && selectedTemplate.missing_vars.length > 0 && (
+              <p className="text-xs text-amber-500 mt-1.5">
+                Missing env: {selectedTemplate.missing_vars.join(", ")}
+              </p>
+            )}
             {selectedTemplate?.config_preview && (
               <div>
                 <button
@@ -142,6 +149,16 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
             }}
             rows={3}
           />
+          <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={networkIsolation}
+              onChange={(e) => setNetworkIsolation(e.target.checked)}
+              className="rounded border-border"
+            />
+            Network isolation
+            <span className="text-xs text-muted-foreground/60">(block LAN access)</span>
+          </label>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex gap-2">
             <Button type="submit" disabled={loading} size="sm">

@@ -1,4 +1,16 @@
 services:
+  network-init:
+    image: ghcr.io/clawfarm/clawfarm-network:latest
+    cap_add: [NET_ADMIN]
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./bots:/data/bots:ro
+    env_file:
+      - .env
+    entrypoint: ["sh", "/app/restore-isolation.sh"]
+    restart: "no"
+
   dashboard:
     image: ghcr.io/clawfarm/clawfarm-dashboard:latest
     expose:
@@ -16,6 +28,9 @@ services:
       - CADDY_ADMIN_URL=http://caddy:2019
     env_file:
       - .env
+    depends_on:
+      network-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:

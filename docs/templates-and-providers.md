@@ -115,9 +115,18 @@ Example `template.meta.json`:
 }
 ```
 
-`description` is shown in the template dropdown when creating a bot. `env_hint` tells users what env vars they need.
+`description` is shown on the template card when creating a bot. `env_hint` tells users what env vars they need.
 
 Templates are auto-discovered from the `bot-template/` directory — no registration needed. Add a new directory and it appears in the dashboard immediately.
+
+## Config Preview & API Key Visibility
+
+The "Config preview" in the create-bot form shows the contents of `openclaw.template.json`:
+
+- **Regular users** see the raw template with `{{PLACEHOLDER}}` syntax — API keys and secrets are never exposed.
+- **Admin users** see the resolved config with actual environment variable values substituted.
+
+If a template references environment variables that are not set on the server, those variables are listed as a warning on the template card. Bots created from templates with missing variables may fail to connect to their LLM provider.
 
 ## Placeholder Syntax
 

@@ -2,12 +2,15 @@ import copy
 import json
 import tarfile
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from app import (
+    _IPTABLES_IMAGE,
     SESSIONS,
+    _apply_network_isolation,
     _bootstrap_admin,
+    _build_iptables_image,
     _build_tls_config,
     _check_login_rate,
     _cleanup_expired_sessions,
@@ -22,6 +25,7 @@ from app import (
     _login_lock,
     _record_failed_login,
     _redact_config,
+    _remove_network_isolation,
     _resolve_template,
     _save_users,
     _sync_caddy_config,
@@ -483,7 +487,7 @@ class TestRollback:
 class TestDuplicate:
     def _mock_launch(self, monkeypatch):
         """Mock _launch_container to avoid Docker."""
-        def fake_launch(name, bot_dir):
+        def fake_launch(name, bot_dir, **kwargs):
             return {"name": name, "status": "created", "port": 3001, "container_name": f"openclaw-bot-{name}"}
         monkeypatch.setattr("app._launch_container", fake_launch)
 
@@ -539,7 +543,7 @@ class TestDuplicate:
 # ===========================================================================
 class TestFork:
     def _mock_launch(self, monkeypatch):
-        def fake_launch(name, bot_dir):
+        def fake_launch(name, bot_dir, **kwargs):
             return {"name": name, "status": "created", "port": 3001, "container_name": f"openclaw-bot-{name}"}
         monkeypatch.setattr("app._launch_container", fake_launch)
 
@@ -740,7 +744,7 @@ class TestOpenClawStateRollback:
 # ===========================================================================
 class TestWorkspaceCopy:
     def _mock_launch(self, monkeypatch):
-        def fake_launch(name, bot_dir):
+        def fake_launch(name, bot_dir, **kwargs):
             return {"name": name, "status": "created", "port": 3001, "container_name": f"openclaw-bot-{name}"}
         monkeypatch.setattr("app._launch_container", fake_launch)
 
@@ -1655,19 +1659,34 @@ class TestListTemplates:
         default = next(t for t in templates if t["name"] == "default")
         assert default["env_hint"] == ""
 
-    def test_config_preview(self, bot_env):
+    def test_config_preview_default_shows_placeholders(self, bot_env):
+        """Non-admin (default) sees raw template with placeholders."""
         templates = list_templates()
         default = next(t for t in templates if t["name"] == "default")
         assert default["config_preview"]
+        assert "{{LLM_MODEL}}" in default["config_preview"]
+
+    def test_config_preview_resolved_for_admin(self, bot_env):
+        """Admin sees resolved config with actual env var values."""
+        templates = list_templates(resolve_config=True)
+        default = next(t for t in templates if t["name"] == "default")
+        assert "test-model" in default["config_preview"]
+        assert "{{LLM_MODEL}}" not in default["config_preview"]
         parsed = json.loads(default["config_preview"])
         assert "agents" in parsed or "models" in parsed
 
-    def test_config_preview_resolves_placeholders(self, bot_env):
+    def test_missing_vars_detected(self, bot_env, monkeypatch):
+        """Unset env vars referenced in template are reported."""
+        monkeypatch.delenv("LLM_API_KEY")
         templates = list_templates()
         default = next(t for t in templates if t["name"] == "default")
-        # bot_env sets LLM_MODEL=test-model — should be resolved in preview
-        assert "test-model" in default["config_preview"]
-        assert "{{LLM_MODEL}}" not in default["config_preview"]
+        assert "LLM_API_KEY" in default["missing_vars"]
+
+    def test_missing_vars_empty_when_all_set(self, bot_env):
+        """No missing vars when all referenced env vars are set."""
+        templates = list_templates()
+        default = next(t for t in templates if t["name"] == "default")
+        assert default["missing_vars"] == []
 
 
 class TestTemplateInCreateFlow:
@@ -2806,3 +2825,148 @@ class TestFunctionalEndpointsAPI:
         # Bob should only see stats for 1 bot (my-bot), not 2
         assert data["total_bots"] == 1
         assert data["running_bots"] == 1
+
+
+# ===========================================================================
+# Network Isolation
+# ===========================================================================
+class TestNetworkIsolation:
+    """Tests for per-bot iptables-based network isolation."""
+
+    def test_apply_generates_correct_script(self):
+        """Verify _apply_network_isolation runs the correct iptables script."""
+        mock_client = MagicMock()
+        mock_network = MagicMock()
+        mock_network.id = "abcdef123456789"
+        mock_client.networks.get.return_value = mock_network
+
+        with patch.dict("os.environ", {"LLM_HOST": "10.0.0.5", "LLM_PORT": "8000"}):
+            _apply_network_isolation(mock_client, "openclaw-net-test", "test")
+
+        mock_client.containers.run.assert_called_once()
+        call_args = mock_client.containers.run.call_args
+        assert call_args[0][0] == _IPTABLES_IMAGE
+        script = call_args[1]["command"][2]  # ["sh", "-c", script]
+        assert "CF-test" in script
+        assert "br-abcdef123456" in script
+        assert "10.0.0.0/8" in script
+        assert "172.16.0.0/12" in script
+        assert "192.168.0.0/16" in script
+        assert "10.0.0.5" in script
+        assert "8000" in script
+        assert call_args[1]["network_mode"] == "host"
+        assert "NET_ADMIN" in call_args[1]["cap_add"]
+        assert call_args[1]["remove"] is True
+
+    def test_apply_no_llm_rule_when_unset(self):
+        """No LLM ACCEPT rule when LLM_HOST/LLM_PORT are not set."""
+        mock_client = MagicMock()
+        mock_network = MagicMock()
+        mock_network.id = "abcdef123456789"
+        mock_client.networks.get.return_value = mock_network
+
+        with patch.dict("os.environ", {"LLM_HOST": "", "LLM_PORT": ""}, clear=False):
+            _apply_network_isolation(mock_client, "openclaw-net-test", "test")
+
+        script = mock_client.containers.run.call_args[1]["command"][2]
+        # The LLM rule line should be empty (just whitespace)
+        assert "10.0.0.5" not in script
+        # But RFC1918 blocks should still be there
+        assert "10.0.0.0/8" in script
+
+    def test_apply_returns_false_on_network_not_found(self):
+        """Returns False when the Docker network doesn't exist."""
+        mock_client = MagicMock()
+        import docker.errors
+        mock_client.networks.get.side_effect = docker.errors.NotFound("not found")
+        assert _apply_network_isolation(mock_client, "openclaw-net-gone", "gone") is False
+
+    def test_apply_returns_false_on_container_run_failure(self):
+        """Returns False and logs warning when ephemeral container fails."""
+        mock_client = MagicMock()
+        mock_network = MagicMock()
+        mock_network.id = "abcdef123456789"
+        mock_client.networks.get.return_value = mock_network
+        mock_client.containers.run.side_effect = RuntimeError("no iptables")
+
+        with patch.dict("os.environ", {"LLM_HOST": "", "LLM_PORT": ""}):
+            result = _apply_network_isolation(mock_client, "openclaw-net-test", "test")
+        assert result is False
+
+    def test_remove_generates_cleanup_script(self):
+        """Verify _remove_network_isolation cleans up chain and DOCKER-USER jump."""
+        mock_client = MagicMock()
+        mock_network = MagicMock()
+        mock_network.id = "abcdef123456789"
+        mock_client.networks.get.return_value = mock_network
+
+        result = _remove_network_isolation(mock_client, "openclaw-net-test", "test")
+        assert result is True
+
+        script = mock_client.containers.run.call_args[1]["command"][2]
+        assert "CF-test" in script
+        assert "br-abcdef123456" in script
+        assert "-D DOCKER-USER" in script
+        assert "-F CF-test" in script
+        assert "-X CF-test" in script
+
+    def test_remove_returns_false_on_failure(self):
+        """Returns False when cleanup container fails."""
+        import docker.errors
+        mock_client = MagicMock()
+        mock_client.networks.get.side_effect = docker.errors.NotFound("gone")
+        mock_client.containers.run.side_effect = RuntimeError("fail")
+        assert _remove_network_isolation(mock_client, "openclaw-net-test", "test") is False
+
+    def test_chain_name_truncated(self):
+        """Chain name is truncated to CF- + 25 chars max."""
+        mock_client = MagicMock()
+        mock_network = MagicMock()
+        mock_network.id = "abcdef123456789"
+        mock_client.networks.get.return_value = mock_network
+
+        long_name = "a" * 50
+        with patch.dict("os.environ", {"LLM_HOST": "", "LLM_PORT": ""}):
+            _apply_network_isolation(mock_client, f"openclaw-net-{long_name}", long_name)
+
+        script = mock_client.containers.run.call_args[1]["command"][2]
+        expected_chain = f"CF-{'a' * 25}"
+        assert expected_chain in script
+
+    def test_create_bot_stores_isolation_in_meta(self, bot_env):
+        """Metadata includes network_isolation when creating a bot."""
+        config = generate_config("iso-bot")
+        write_bot_files("iso-bot", config, network_isolation=True)
+        meta = read_meta("iso-bot")
+        assert meta["network_isolation"] is True
+
+    def test_create_bot_default_isolation_true(self, bot_env):
+        """Default network_isolation is True when not specified."""
+        config = generate_config("default-bot")
+        write_bot_files("default-bot", config)
+        meta = read_meta("default-bot")
+        assert meta["network_isolation"] is True
+
+    def test_create_bot_isolation_false(self, bot_env):
+        """Metadata stores network_isolation=False when explicitly set."""
+        config = generate_config("open-bot")
+        write_bot_files("open-bot", config, network_isolation=False)
+        meta = read_meta("open-bot")
+        assert meta["network_isolation"] is False
+
+    def test_build_iptables_image_skips_when_present(self):
+        """_build_iptables_image doesn't rebuild if image already exists."""
+        mock_client = MagicMock()
+        mock_client.images.get.return_value = MagicMock()  # Image found
+        _build_iptables_image(mock_client)
+        mock_client.images.build.assert_not_called()
+
+    def test_build_iptables_image_builds_when_missing(self):
+        """_build_iptables_image builds from inline Dockerfile when image not found."""
+        import docker.errors
+        mock_client = MagicMock()
+        mock_client.images.get.side_effect = docker.errors.ImageNotFound("not found")
+        _build_iptables_image(mock_client)
+        mock_client.images.build.assert_called_once()
+        call_kwargs = mock_client.images.build.call_args[1]
+        assert call_kwargs["tag"] == _IPTABLES_IMAGE

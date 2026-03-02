@@ -1,4 +1,18 @@
 services:
+  network-init:
+    build:
+      context: ./network
+      network: host
+    cap_add: [NET_ADMIN]
+    network_mode: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./bots:/data/bots:ro
+    env_file:
+      - .env
+    entrypoint: ["sh", "/app/restore-isolation.sh"]
+    restart: "no"
+
   dashboard:
     build:
       context: .
@@ -19,6 +33,9 @@ services:
       - CADDY_ADMIN_URL=http://caddy:2019
     env_file:
       - .env
+    depends_on:
+      network-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:

@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import logging
 import os
@@ -315,8 +316,14 @@ def _resolve_template(template_text: str) -> str:
     return re.sub(r"\{\{(\w+)\}\}", replacer, template_text)
 
 
-def list_templates() -> list[dict]:
-    """List available bot templates."""
+def list_templates(resolve_config: bool = False) -> list[dict]:
+    """List available bot templates.
+
+    Args:
+        resolve_config: If True (admin), resolve {{VAR}} placeholders in config
+                        preview. If False (regular user), show raw template with
+                        placeholders intact.
+    """
     templates = []
     for d in sorted(TEMPLATE_DIR.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
@@ -336,12 +343,18 @@ def list_templates() -> list[dict]:
             except (json.JSONDecodeError, OSError):
                 pass
         config_preview = ""
+        missing_vars: list[str] = []
         tmpl_path = d / "openclaw.template.json"
         if tmpl_path.exists():
             try:
                 raw = tmpl_path.read_text()
-                resolved = _resolve_template(raw)
-                config_preview = json.dumps(json.loads(resolved), indent=2)
+                placeholders = re.findall(r"\{\{(\w+)\}\}", raw)
+                missing_vars = sorted(set(v for v in placeholders if not os.environ.get(v)))
+                if resolve_config:
+                    resolved = _resolve_template(raw)
+                    config_preview = json.dumps(json.loads(resolved), indent=2)
+                else:
+                    config_preview = raw.strip()
             except (json.JSONDecodeError, OSError):
                 config_preview = ""
         templates.append({
@@ -350,6 +363,7 @@ def list_templates() -> list[dict]:
             "description": description,
             "env_hint": env_hint,
             "config_preview": config_preview,
+            "missing_vars": missing_vars,
         })
     return templates
 
@@ -654,7 +668,7 @@ def generate_config(name: str, extra_config: dict | None = None,
 
 def write_bot_files(name: str, config: dict, soul: str | None = None,
                     forked_from: str | None = None, created_by: str | None = None,
-                    template: str = "default") -> Path:
+                    template: str = "default", network_isolation: bool = True) -> Path:
     """Create bots/{name}/, write config.json + SOUL.md + .meta.json. Returns bot dir."""
     bot_dir = BOTS_DIR / name
     bot_dir.mkdir(parents=True, exist_ok=True)
@@ -683,6 +697,7 @@ def write_bot_files(name: str, config: dict, soul: str | None = None,
         "forked_from": forked_from,
         "created_by": created_by,
         "template": template,
+        "network_isolation": network_isolation,
         "backups": [],
     }
     write_meta(name, meta)
@@ -808,7 +823,8 @@ def _effective_status(container) -> str:
     return "running"
 
 
-def _launch_container(name: str, bot_dir: Path, template: str = "default") -> dict:
+def _launch_container(name: str, bot_dir: Path, template: str = "default",
+                      network_isolation: bool = True) -> dict:
     """Allocate port, create network, start container. Returns bot info."""
     port = allocate_port()
     client = _get_client()
@@ -877,6 +893,9 @@ def _launch_container(name: str, bot_dir: Path, template: str = "default") -> di
 
     _sync_caddy_config_async()
 
+    if network_isolation and in_compose:
+        _apply_network_isolation(client, network_name, name)
+
     return {
         "name": name,
         "status": _effective_status(container),
@@ -890,14 +909,16 @@ def _launch_container(name: str, bot_dir: Path, template: str = "default") -> di
 # Bot lifecycle
 # ---------------------------------------------------------------------------
 def create_bot(name: str, soul: str | None = None, extra_config: dict | None = None,
-               created_by: str | None = None, template: str = "default") -> dict:
+               created_by: str | None = None, template: str = "default",
+               network_isolation: bool = True) -> dict:
     """Full orchestration: sanitize, gen config, write files, launch container."""
     name = sanitize_name(name)
     if (BOTS_DIR / name).exists():
         raise ValueError(f"Bot already exists: {name!r}")
     config = generate_config(name, extra_config, template=template)
-    bot_dir = write_bot_files(name, config, soul, created_by=created_by, template=template)
-    return _launch_container(name, bot_dir, template=template)
+    bot_dir = write_bot_files(name, config, soul, created_by=created_by, template=template,
+                              network_isolation=network_isolation)
+    return _launch_container(name, bot_dir, template=template, network_isolation=network_isolation)
 
 
 def _copy_workspace(src_dir: Path, dst_dir: Path) -> None:
@@ -929,10 +950,13 @@ def duplicate_bot(name: str, new_name: str, created_by: str | None = None) -> di
 
     config = json.loads((src_dir / "config.json").read_text())
     soul = (src_dir / "SOUL.md").read_text() if (src_dir / "SOUL.md").exists() else ""
+    src_meta = read_meta(name)
+    isolation = src_meta.get("network_isolation", True)
 
-    bot_dir = write_bot_files(new_name, config, soul, forked_from=None, created_by=created_by)
+    bot_dir = write_bot_files(new_name, config, soul, forked_from=None, created_by=created_by,
+                              network_isolation=isolation)
     _copy_workspace(src_dir, bot_dir)
-    return _launch_container(new_name, bot_dir)
+    return _launch_container(new_name, bot_dir, network_isolation=isolation)
 
 
 def fork_bot(name: str, new_name: str, created_by: str | None = None) -> dict:
@@ -948,10 +972,13 @@ def fork_bot(name: str, new_name: str, created_by: str | None = None) -> dict:
 
     config = json.loads((src_dir / "config.json").read_text())
     soul = (src_dir / "SOUL.md").read_text() if (src_dir / "SOUL.md").exists() else ""
+    src_meta = read_meta(name)
+    isolation = src_meta.get("network_isolation", True)
 
-    bot_dir = write_bot_files(new_name, config, soul, forked_from=name, created_by=created_by)
+    bot_dir = write_bot_files(new_name, config, soul, forked_from=name, created_by=created_by,
+                              network_isolation=isolation)
     _copy_workspace(src_dir, bot_dir)
-    result = _launch_container(new_name, bot_dir)
+    result = _launch_container(new_name, bot_dir, network_isolation=isolation)
     result["forked_from"] = name
     return result
 
@@ -973,6 +1000,7 @@ def list_bots() -> list[dict]:
             "created_by": meta.get("created_by"),
             "created_at": meta.get("created_at"),
             "template": meta.get("template"),
+            "network_isolation": meta.get("network_isolation", True),
             "backup_count": len(meta.get("backups", [])),
             "storage_bytes": get_bot_storage(name),
             "cron_jobs": get_bot_cron_jobs(name),
@@ -995,6 +1023,11 @@ def delete_bot(name: str) -> dict:
         container.remove()
     except docker.errors.NotFound:
         pass
+
+    # Remove network isolation rules before tearing down the network
+    meta = read_meta(name)
+    if meta.get("network_isolation", True):
+        _remove_network_isolation(client, network_name, name)
 
     _disconnect_caddy_from_network(client, network_name)
 
@@ -1346,6 +1379,97 @@ def _disconnect_caddy_from_network(client, network_name: str) -> None:
         network.disconnect(CADDY_CONTAINER)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Per-bot network isolation (iptables)
+# ---------------------------------------------------------------------------
+_IPTABLES_IMAGE = "clawfarm-iptables:local"
+
+
+def _build_iptables_image(client) -> None:
+    """Build the lightweight iptables utility image if not already present."""
+    try:
+        client.images.get(_IPTABLES_IMAGE)
+    except docker.errors.ImageNotFound:
+        dockerfile = io.BytesIO(b"FROM alpine:3.21\nRUN apk add --no-cache iptables\n")
+        client.images.build(fileobj=dockerfile, tag=_IPTABLES_IMAGE, rm=True)
+
+
+def _apply_network_isolation(client, network_name: str, bot_name: str) -> bool:
+    """Apply iptables rules blocking LAN access for a bot's network. Returns True on success."""
+    try:
+        network = client.networks.get(network_name)
+    except docker.errors.NotFound:
+        return False
+
+    network_id = network.id[:12]
+    chain = f"CF-{bot_name[:25]}"
+    llm_host = os.environ.get("LLM_HOST", "")
+    llm_port = os.environ.get("LLM_PORT", "")
+
+    llm_rule = ""
+    if llm_host and llm_port:
+        llm_rule = f"iptables -A {chain} -d {llm_host} -p tcp --dport {llm_port} -j RETURN"
+
+    script = f"""
+        iptables -N {chain} 2>/dev/null || iptables -F {chain}
+        iptables -A {chain} -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+        {llm_rule}
+        iptables -A {chain} -d 10.0.0.0/8 -j DROP
+        iptables -A {chain} -d 172.16.0.0/12 -j DROP
+        iptables -A {chain} -d 192.168.0.0/16 -j DROP
+        iptables -A {chain} -j RETURN
+        iptables -C DOCKER-USER -i br-{network_id} -j {chain} 2>/dev/null || \
+        iptables -I DOCKER-USER -i br-{network_id} -j {chain}
+    """
+
+    try:
+        client.containers.run(
+            _IPTABLES_IMAGE,
+            command=["sh", "-c", script],
+            network_mode="host",
+            cap_add=["NET_ADMIN"],
+            remove=True,
+        )
+        return True
+    except Exception as e:
+        log.warning("Network isolation failed for %s: %s", bot_name, e)
+        return False
+
+
+def _remove_network_isolation(client, network_name: str, bot_name: str) -> bool:
+    """Remove iptables rules for a bot's network. Returns True on success."""
+    network_id = ""
+    try:
+        network = client.networks.get(network_name)
+        network_id = network.id[:12]
+    except docker.errors.NotFound:
+        pass
+
+    chain = f"CF-{bot_name[:25]}"
+
+    # If we don't have a network_id, we can't remove the DOCKER-USER jump rule,
+    # but we can still flush and delete the chain itself.
+    delete_jump = f'iptables -D DOCKER-USER -i br-{network_id} -j {chain} 2>/dev/null || true' if network_id else "true"
+
+    script = f"""
+        {delete_jump}
+        iptables -F {chain} 2>/dev/null || true
+        iptables -X {chain} 2>/dev/null || true
+    """
+
+    try:
+        client.containers.run(
+            _IPTABLES_IMAGE,
+            command=["sh", "-c", script],
+            network_mode="host",
+            cap_add=["NET_ADMIN"],
+            remove=True,
+        )
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1824,6 +1948,11 @@ async def _lifespan(app: FastAPI):
     if os.environ.get("HOST_BOTS_DIR"):
         try:
             client = _get_client()
+            # Build iptables utility image for network isolation
+            try:
+                _build_iptables_image(client)
+            except Exception:
+                log.warning("Failed to build iptables utility image — network isolation unavailable")
             containers = client.containers.list(
                 all=True, filters={"label": "openclaw.bot=true"}
             )
@@ -1831,6 +1960,13 @@ async def _lifespan(app: FastAPI):
                 name = c.labels.get("openclaw.name", "")
                 if name:
                     _connect_caddy_to_network(client, f"openclaw-net-{name}")
+            # Re-apply network isolation rules (handles host reboot where iptables rules are lost)
+            for c in containers:
+                name = c.labels.get("openclaw.name", "")
+                if name:
+                    meta = read_meta(name)
+                    if meta.get("network_isolation", True):
+                        _apply_network_isolation(client, f"openclaw-net-{name}", name)
         except Exception:
             pass
         # Migrate existing bots: remove basePath (Caddy strip_path_prefix handles it)
@@ -1893,6 +2029,7 @@ class CreateBotRequest(BaseModel):
     soul: str | None = None
     extra_config: dict | None = None
     template: str = "default"
+    network_isolation: bool = True
 
 
 class DuplicateRequest(BaseModel):
@@ -2154,7 +2291,8 @@ async def api_config(session: dict = Depends(_require_session)):
 @app.get("/api/templates")
 async def api_list_templates(session: dict = Depends(_require_session)):
     """List available bot templates."""
-    return list_templates()
+    is_admin = session.get("role") == "admin"
+    return list_templates(resolve_config=is_admin)
 
 
 # --- Fleet stats ---
@@ -2186,7 +2324,8 @@ async def api_list_bots(session: dict = Depends(_require_session)):
 async def api_create_bot(req: CreateBotRequest, session: dict = Depends(_require_session)):
     try:
         result = create_bot(req.name, req.soul, req.extra_config,
-                            created_by=session["username"], template=req.template)
+                            created_by=session["username"], template=req.template,
+                            network_isolation=req.network_isolation)
         _grant_bot_to_user(session["username"], result["name"])
         return result
     except ValueError as e:

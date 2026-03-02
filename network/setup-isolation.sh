@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# NOTE: Per-bot network isolation is now applied automatically by the dashboard.
+# This script is retained for manual use or environments where automatic isolation
+# is unavailable (e.g., Docker Desktop). It applies GLOBAL rules that affect ALL
+# Docker containers — use with care on shared hosts.
+#
 # Idempotent iptables rules for bot network isolation.
 # Bots can reach the internet and the LLM server, but not the LAN or each other.
 set -euo pipefail

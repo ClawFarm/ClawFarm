@@ -219,3 +219,40 @@ The bot Control UI uses WebSocket connections for real-time interaction. Your in
 - Support long-lived connections (bot sessions can last hours)
 
 WebSocket connections go to the root path (`wss://<host>/`). No special WebSocket-specific routing is needed — just ensure your proxy doesn't strip Upgrade headers.
+
+## Network Isolation
+
+Each bot runs on its own Docker bridge network and cannot communicate with other bots.
+By default, bots are also blocked from reaching your LAN (RFC1918 private networks:
+10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16). Internet access remains available.
+
+### How it works
+
+When a bot is created with network isolation enabled (the default), ClawFarm applies
+per-bot iptables rules to the DOCKER-USER chain. Each bot gets its own chain
+(`CF-{name}`) scoped to its bridge interface — no global rule flushing.
+
+Rules are applied via a short-lived privileged container (`clawfarm-iptables:local`)
+that runs with `CAP_NET_ADMIN` and `network_mode: host`. The dashboard container itself
+does not need elevated privileges.
+
+On startup, a `network-init` service restores rules for all existing bots (handles
+host reboots where iptables rules are lost). The dashboard also re-applies rules
+during its own startup as a secondary safety net.
+
+### LAN-based LLM servers
+
+If your LLM server is on the local network, set `LLM_HOST` and `LLM_PORT` in `.env`.
+Isolated bots will be allowed to reach this specific host:port while all other LAN
+access remains blocked.
+
+### Disabling isolation
+
+Uncheck "Network isolation" when creating a bot in the dashboard. This allows the bot
+full LAN access (useful for bots that need to interact with local services).
+
+### Requirements
+
+- Linux host with iptables (standard on all Linux distros)
+- Docker Engine (not Docker Desktop on macOS/Windows — isolation degrades gracefully)
+- ClawFarm logs a warning if iptables rules cannot be applied

@@ -26,7 +26,7 @@ OpenClaw is a powerful autonomous AI agent, but it's designed as a **single-oper
 
 ClawFarm wraps OpenClaw in operational infrastructure:
 
-- **Container isolation** — each agent runs in its own Docker container and network. Agents can't see each other, and optional iptables rules block LAN access.
+- **Container isolation** — each agent runs in its own Docker container and network. Agents can't see each other, and LAN access is blocked by default via per-bot iptables rules. Disable per-agent if needed.
 - **Web dashboard** — create, start/stop, duplicate, fork, and delete agents from a browser instead of the command line.
 - **Multi-user RBAC** — different users own different agents, with per-agent access control enforced at the reverse proxy layer.
 - **Backup & rollback** — scheduled hourly backups with retention policies and one-click restore per agent.
