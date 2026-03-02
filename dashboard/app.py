@@ -1309,6 +1309,8 @@ CADDY_ADMIN_URL = os.environ.get("CADDY_ADMIN_URL", "http://caddy:2019")
 TLS_MODE = os.environ.get("TLS_MODE", "internal").lower()  # internal, acme, custom, off
 DOMAIN = os.environ.get("DOMAIN", "")  # Required for acme mode
 PORTAL_URL = os.environ.get("PORTAL_URL", "")  # e.g. "https://farm.example.com"
+_CADDY_LISTEN_PORT = 8080  # Fixed internal container port — not user-configurable
+CADDY_PORT = int(os.environ.get("CADDY_PORT", "8443"))  # External host-facing port
 
 # Auto-derive PORTAL_URL in acme mode
 if not PORTAL_URL and TLS_MODE == "acme" and DOMAIN:
@@ -1379,7 +1381,7 @@ def _sync_caddy_config() -> None:
             all=False, filters={"label": "openclaw.bot=true"}
         )
 
-        caddy_port = int(os.environ.get("CADDY_PORT", "8443"))
+        caddy_port = _CADDY_LISTEN_PORT
         tls_policy, tls_app, scheme = _build_tls_config()
 
         # forward_auth handler: subrequest to dashboard's /api/auth/verify
@@ -1387,7 +1389,7 @@ def _sync_caddy_config() -> None:
         login_url = (
             f"{PORTAL_URL}/login"
             if PORTAL_URL else
-            f"{scheme}://{{http.request.host}}:{caddy_port}/login"
+            f"{scheme}://{{http.request.host}}:{CADDY_PORT}/login"
         )
 
         def _forward_auth_handler(extra_headers=None, redirect_on_fail=False):
@@ -1577,7 +1579,7 @@ def _sync_caddy_config() -> None:
             redirect_location = (
                 f"{PORTAL_URL}{{http.request.uri}}"
                 if PORTAL_URL else
-                f"https://{{http.request.host}}:{caddy_port}{{http.request.uri}}"
+                f"https://{{http.request.host}}:{CADDY_PORT}{{http.request.uri}}"
             )
             servers["redirect"] = {
                 "listen": [":80"],
@@ -1744,10 +1746,7 @@ app = FastAPI(title="ClawFarm", lifespan=_lifespan)
 _cors_origins: list[str] = ["*"]
 _cors_credentials = False
 if PORTAL_URL:
-    caddy_port = int(os.environ.get("CADDY_PORT", "8443"))
-    _cors_origins = [f"{PORTAL_URL}:{caddy_port}"]
-    if caddy_port == 443:
-        _cors_origins.append(PORTAL_URL)
+    _cors_origins = [PORTAL_URL.rstrip("/")]
     _cors_credentials = True
 
 app.add_middleware(
@@ -2003,7 +2002,7 @@ async def api_config(session: dict = Depends(_require_session)):
     """Return public configuration for the frontend."""
     return {
         "portal_url": PORTAL_URL or None,
-        "caddy_port": int(os.environ.get("CADDY_PORT", "8443")),
+        "caddy_port": CADDY_PORT,
         "tls_mode": TLS_MODE,
     }
 

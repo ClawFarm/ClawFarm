@@ -209,6 +209,8 @@ The dashboard container runs as UID 1000 (matching OpenClaw's `node` user and th
 
 Single entry point for all services via Caddy on port 8443 (HTTPS). This is required because OpenClaw Control UI uses `crypto.subtle` which only works in a Secure Context (HTTPS or localhost).
 
+**Port architecture:** Caddy listens on a fixed internal port (8080) inside the container. Docker Compose maps the configurable host port (`CADDY_PORT`, default 8443) to it: `${CADDY_PORT:-8443}:8080`. This decoupling means `TLS_MODE` changes never require port changes. See `docs/deployment.md` for full deployment mode documentation.
+
 **Architecture:** Path-based routing under the single `:8443` port. Each bot is accessible at `https://host:8443/claw/{name}/`. Caddy uses `strip_path_prefix` to strip `/claw/{name}` before proxying to the bot — OpenClaw serves at root (no `basePath` config needed). This eliminates exposing 100 ports — only `:8443` and `:80` are published.
 
 **Route structure:**
@@ -303,7 +305,7 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 | `BOT_PORT_START` | No | Start of port range (default: 3001). Dev-mode only — in compose mode, bots use path-based routing under `:8443` |
 | `BOT_PORT_END` | No | End of port range (default: 3100). Dev-mode only |
 | `HOST_BOTS_DIR` | Docker Compose | **Host-side** path to `bots/` dir — required when dashboard runs in a container (see workaround above) |
-| `CADDY_PORT` | No | Caddy listening port (default: 8443) |
+| `CADDY_PORT` | No | Host port for dashboard access (default: 8443). Caddy listens on fixed internal port 8080 |
 | `CADDY_ADMIN_URL` | Docker Compose | Caddy admin API URL (default: `http://caddy:2019`) |
 | `PORTAL_URL` | No | External base URL override (auto-derived in `acme` mode from `DOMAIN`, not needed in `internal`/`custom` mode) |
 | `BRAVE_API_KEY` | No | Brave Search API key for agent web search |

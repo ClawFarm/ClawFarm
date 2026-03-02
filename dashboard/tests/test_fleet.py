@@ -1803,7 +1803,7 @@ class TestSyncCaddyConfig:
         """Internal mode with no bots: self-signed TLS + redirect server."""
         import app
         monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setenv("CADDY_PORT", "8443")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
@@ -1813,9 +1813,9 @@ class TestSyncCaddyConfig:
         # Admin API
         assert config["admin"]["listen"] == ":2019"
 
-        # Main server listens on configured port
+        # Main server listens on fixed internal port
         main = config["apps"]["http"]["servers"]["main"]
-        assert main["listen"] == [":8443"]
+        assert main["listen"] == [":8080"]
 
         # TLS app: internal issuer with on_demand
         tls_app = config["apps"]["tls"]
@@ -1837,7 +1837,7 @@ class TestSyncCaddyConfig:
         """Internal mode with bots: bot routes inserted before catch-all."""
         import app
         monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setenv("CADDY_PORT", "8443")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
 
         caddy_env["add_bot"]("alice")
         caddy_env["add_bot"]("bob")
@@ -1883,7 +1883,7 @@ class TestSyncCaddyConfig:
         """Off mode: plain HTTP, no TLS app, no redirect server."""
         import app
         monkeypatch.setattr(app, "TLS_MODE", "off")
-        monkeypatch.setenv("CADDY_PORT", "8080")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
@@ -1897,14 +1897,14 @@ class TestSyncCaddyConfig:
         # No TLS app
         assert "tls" not in config["apps"]
 
-        # Main server on HTTP port
+        # Main server on fixed internal port (independent of CADDY_PORT)
         assert servers["main"]["listen"] == [":8080"]
 
     def test_custom_mode_tls_policies(self, monkeypatch, caddy_env):
         """Custom mode: cert file references in TLS config."""
         import app
         monkeypatch.setattr(app, "TLS_MODE", "custom")
-        monkeypatch.setenv("CADDY_PORT", "8443")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
@@ -1930,7 +1930,7 @@ class TestSyncCaddyConfig:
         monkeypatch.setattr(app, "TLS_MODE", "acme")
         monkeypatch.setattr(app, "DOMAIN", "farm.example.com")
         monkeypatch.setenv("ACME_EMAIL", "admin@example.com")
-        monkeypatch.setenv("CADDY_PORT", "443")
+        monkeypatch.setattr(app, "CADDY_PORT", 443)
 
         _sync_caddy_config()
 
@@ -1943,8 +1943,8 @@ class TestSyncCaddyConfig:
         assert policy["issuers"][0]["email"] == "admin@example.com"
         assert policy["subjects"] == ["farm.example.com"]
 
-        # Main server on port 443
-        assert config["apps"]["http"]["servers"]["main"]["listen"] == [":443"]
+        # Main server on fixed internal port (CADDY_PORT=443 is external only)
+        assert config["apps"]["http"]["servers"]["main"]["listen"] == [":8080"]
 
         # Redirect server (HTTPS enabled)
         assert "redirect" in config["apps"]["http"]["servers"]
@@ -1954,7 +1954,7 @@ class TestSyncCaddyConfig:
         import app
         monkeypatch.setattr(app, "TLS_MODE", "internal")
         monkeypatch.setattr(app, "AUTH_DISABLED", True)
-        monkeypatch.setenv("CADDY_PORT", "8443")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
 
         caddy_env["add_bot"]("testbot")
 
@@ -1991,7 +1991,7 @@ class TestSyncCaddyConfig:
         import app
         monkeypatch.setattr(app, "TLS_MODE", "internal")
         monkeypatch.setattr(app, "AUTH_DISABLED", True)  # simpler to inspect
-        monkeypatch.setenv("CADDY_PORT", "8443")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
 
         caddy_env["add_bot"]("mybot")
 
@@ -2029,7 +2029,7 @@ class TestSyncCaddyConfig:
         import app
         monkeypatch.setattr(app, "TLS_MODE", "internal")
         monkeypatch.setattr(app, "PORTAL_URL", "https://farm.example.com")
-        monkeypatch.setenv("CADDY_PORT", "8443")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 

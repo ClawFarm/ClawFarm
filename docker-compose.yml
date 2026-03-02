@@ -32,7 +32,7 @@ services:
   caddy:
     image: caddy:2.8-alpine
     ports:
-      - "${CADDY_PORT:-8443}:${CADDY_PORT:-8443}"
+      - "${CADDY_PORT:-8443}:8080"
       - "80:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
