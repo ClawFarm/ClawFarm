@@ -210,6 +210,15 @@ cd frontend && npm install && npm run dev
 cd dashboard && python -m pytest tests/test_fleet.py -v
 ```
 
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Deployment](docs/deployment.md) | TLS modes, upstream proxy setup, port architecture |
+| [Templates & Providers](docs/templates-and-providers.md) | LLM provider setup, template structure, custom templates |
+| [Backups & Rollback](docs/backups-and-rollback.md) | Scheduled backups, retention, rollback flow |
+| [Roles & Access Control](docs/roles-and-access.md) | User roles, per-bot RBAC, session management |
+
 ## Releasing
 
 See [RELEASING.md](RELEASING.md) for the release process and Docker image publishing.
