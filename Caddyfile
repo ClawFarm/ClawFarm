@@ -1,7 +1,6 @@
-# Initial Caddyfile — overwritten dynamically by the dashboard via Caddy admin API.
-# This static config is used on first startup before the dashboard pushes its config.
-# Uses Caddy's internal CA (auto-generated self-signed cert) so no cert files are needed.
-# Caddy listens on fixed internal port 8080; Docker Compose maps the host port to it.
+# Deny-by-default: returns 503 until the dashboard pushes dynamic config.
+# This prevents unauthenticated access during the startup window.
+# Caddy admin API stays open so the dashboard can push the real config.
 {
 	admin :2019
 }
@@ -11,11 +10,8 @@
 		on_demand
 	}
 
-	handle /api/* {
-		reverse_proxy dashboard:8080
-	}
-
-	handle /* {
-		reverse_proxy frontend:3000
+	respond 503 {
+		body "Service starting — please retry in a few seconds."
+		close
 	}
 }

@@ -2062,3 +2062,161 @@ class TestSyncCaddyConfig:
 
         # Should not raise — fails silently
         _sync_caddy_config()
+
+    def test_security_headers_present(self, monkeypatch, caddy_env):
+        """First route is a matchless security headers route with correct headers."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        first = routes[0]
+
+        # No matcher — applies to all requests (non-terminal middleware)
+        assert "match" not in first
+
+        headers_handler = first["handle"][0]
+        assert headers_handler["handler"] == "headers"
+        hdr = headers_handler["response"]["set"]
+        assert hdr["X-Content-Type-Options"] == ["nosniff"]
+        assert hdr["X-Frame-Options"] == ["SAMEORIGIN"]
+        assert hdr["Referrer-Policy"] == ["strict-origin-when-cross-origin"]
+        assert hdr["Permissions-Policy"] == ["camera=(), microphone=(), geolocation=()"]
+        # HSTS present when TLS is enabled
+        assert "Strict-Transport-Security" in hdr
+        assert "max-age=63072000" in hdr["Strict-Transport-Security"][0]
+
+    def test_security_headers_no_hsts_when_tls_off(self, monkeypatch, caddy_env):
+        """No HSTS header when TLS_MODE=off."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "off")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        first = routes[0]
+        hdr = first["handle"][0]["response"]["set"]
+        assert "Strict-Transport-Security" not in hdr
+        # Other headers still present
+        assert hdr["X-Content-Type-Options"] == ["nosniff"]
+
+    def test_x_frame_options_sameorigin_global(self, monkeypatch, caddy_env):
+        """X-Frame-Options is SAMEORIGIN globally (allows bot Control UI iframes)."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setattr(app, "AUTH_DISABLED", True)
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+
+        caddy_env["add_bot"]("testbot")
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        first = routes[0]
+
+        # Global security headers use SAMEORIGIN (not DENY) because the
+        # dashboard iframes bot Control UI at the same origin.
+        assert "match" not in first
+        hdr = first["handle"][0]["response"]["set"]
+        assert hdr["X-Frame-Options"] == ["SAMEORIGIN"]
+
+    def test_health_in_public_routes(self, monkeypatch, caddy_env):
+        """Health endpoint is in the public (unauthenticated) routes."""
+        import app
+        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+
+        _sync_caddy_config()
+
+        config = caddy_env["captured"][0]
+        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+
+        # Find the public auth routes (match includes /api/auth/login)
+        public_routes = [r for r in routes if any(
+            "/api/auth/login" in p
+            for m in r.get("match", [])
+            for p in m.get("path", [])
+        )]
+        assert len(public_routes) == 1
+        paths = public_routes[0]["match"][0]["path"]
+        assert "/api/health" in paths
+
+
+# ===========================================================================
+# Health Endpoint
+# ===========================================================================
+class TestHealthEndpoint:
+    @pytest.fixture(autouse=True)
+    def setup(self, auth_env, monkeypatch):
+        from app import app
+        from fastapi.testclient import TestClient
+        monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+        _bootstrap_admin()
+        self.client = TestClient(app)
+
+    def test_health_returns_200_without_auth(self):
+        """Health endpoint works without authentication."""
+        r = self.client.get("/api/health")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+
+
+# ===========================================================================
+# Session Cookie Secure Flag
+# ===========================================================================
+class TestSessionCookieSecureFlag:
+    @pytest.fixture(autouse=True)
+    def setup(self, auth_env, monkeypatch):
+        from app import app
+        from fastapi.testclient import TestClient
+        monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+        _bootstrap_admin()
+        self.client = TestClient(app)
+        self.monkeypatch = monkeypatch
+
+    def _login_and_get_cookie_header(self):
+        r = self.client.post("/api/auth/login", json={"username": "admin", "password": "admin-pass"})
+        assert r.status_code == 200
+        return r.headers.get("set-cookie", "")
+
+    def test_compose_tls_on_sets_secure(self):
+        """Compose mode + TLS enabled → Secure flag set."""
+        import app
+        self.monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
+        self.monkeypatch.setattr(app, "TLS_MODE", "internal")
+        self.monkeypatch.setattr(app, "PORTAL_URL", "")
+        cookie = self._login_and_get_cookie_header()
+        assert "secure" in cookie.lower()
+
+    def test_compose_tls_off_with_https_portal_sets_secure(self):
+        """Compose mode + TLS off + PORTAL_URL=https → Secure flag set."""
+        import app
+        self.monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
+        self.monkeypatch.setattr(app, "TLS_MODE", "off")
+        self.monkeypatch.setattr(app, "PORTAL_URL", "https://farm.example.com")
+        cookie = self._login_and_get_cookie_header()
+        assert "secure" in cookie.lower()
+
+    def test_compose_tls_off_without_https_portal_no_secure(self):
+        """Compose mode + TLS off + no HTTPS PORTAL_URL → no Secure flag."""
+        import app
+        self.monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
+        self.monkeypatch.setattr(app, "TLS_MODE", "off")
+        self.monkeypatch.setattr(app, "PORTAL_URL", "")
+        cookie = self._login_and_get_cookie_header()
+        assert "secure" not in cookie.lower()
+
+    def test_dev_mode_no_secure(self):
+        """Dev mode (no HOST_BOTS_DIR) → no Secure flag regardless of TLS mode."""
+        import app
+        self.monkeypatch.delenv("HOST_BOTS_DIR", raising=False)
+        self.monkeypatch.setattr(app, "TLS_MODE", "internal")
+        self.monkeypatch.setattr(app, "PORTAL_URL", "")
+        cookie = self._login_and_get_cookie_header()
+        assert "secure" not in cookie.lower()

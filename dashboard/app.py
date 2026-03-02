@@ -1316,6 +1316,14 @@ CADDY_PORT = int(os.environ.get("CADDY_PORT", "8443"))  # External host-facing p
 if not PORTAL_URL and TLS_MODE == "acme" and DOMAIN:
     PORTAL_URL = f"https://{DOMAIN}"
 
+if not PORTAL_URL and TLS_MODE in ("off", "acme"):
+    log.warning(
+        "TLS_MODE=%s but PORTAL_URL is not set. "
+        "CORS will use wildcard origins and URL construction will fall back to "
+        "dynamic host detection. Set PORTAL_URL for production deployments.",
+        TLS_MODE,
+    )
+
 
 def _build_tls_config() -> tuple[list, dict, str]:
     """Build TLS connection policies, TLS app config, and scheme based on TLS_MODE.
@@ -1481,6 +1489,7 @@ def _sync_caddy_config() -> None:
                 {
                     "match": [{"path": [
                         "/api/auth/login", "/api/auth/verify", "/api/auth/logout",
+                        "/api/health",
                     ]}],
                     "handle": [{
                         "handler": "reverse_proxy",
@@ -1534,7 +1543,7 @@ def _sync_caddy_config() -> None:
                 bot_proxy = {"handler": "reverse_proxy", "upstreams": [{"dial": f"{container_name}:18789"}]}
                 strip_prefix = {"handler": "rewrite", "strip_path_prefix": f"/claw/{name}"}
                 cookie_flags = "Path=/; HttpOnly; SameSite=Lax"
-                if TLS_MODE != "off":
+                if TLS_MODE != "off" or PORTAL_URL.startswith("https://"):
                     cookie_flags += "; Secure"
                 set_cookie = {"handler": "headers", "response": {"set": {
                     "Set-Cookie": [f"cfm_bot={name}; {cookie_flags}"],
@@ -1563,6 +1572,26 @@ def _sync_caddy_config() -> None:
                     ],
                     "handle": handlers,
                 })
+
+        # Security response headers — matchless route (non-terminal middleware).
+        # X-Frame-Options is SAMEORIGIN (not DENY) because the dashboard
+        # legitimately iframes bot Control UI at the same origin.
+        security_headers = {
+            "X-Content-Type-Options": ["nosniff"],
+            "X-Frame-Options": ["SAMEORIGIN"],
+            "Referrer-Policy": ["strict-origin-when-cross-origin"],
+            "Permissions-Policy": ["camera=(), microphone=(), geolocation=()"],
+        }
+        if TLS_MODE != "off":
+            security_headers["Strict-Transport-Security"] = [
+                "max-age=63072000; includeSubDomains"
+            ]
+        main_routes.insert(0, {
+            "handle": [{
+                "handler": "headers",
+                "response": {"set": security_headers},
+            }],
+        })
 
         # Build main server config
         main_server = {
@@ -1741,7 +1770,14 @@ async def _lifespan(app: FastAPI):
     _backup_stop_event.set()
 
 
-app = FastAPI(title="ClawFarm", lifespan=_lifespan)
+_in_compose = bool(os.environ.get("HOST_BOTS_DIR"))
+app = FastAPI(
+    title="ClawFarm",
+    lifespan=_lifespan,
+    docs_url=None if _in_compose else "/docs",
+    redoc_url=None if _in_compose else "/redoc",
+    openapi_url=None if _in_compose else "/openapi.json",
+)
 
 _cors_origins: list[str] = ["*"]
 _cors_credentials = False
@@ -1798,8 +1834,10 @@ class UpdateUserRequest(BaseModel):
 # --- Auth ---
 
 def _set_session_cookie(response: Response, token: str) -> None:
-    # Secure=True only when using TLS in compose mode — plain HTTP rejects Secure cookies
-    secure = bool(os.environ.get("HOST_BOTS_DIR")) and TLS_MODE != "off"
+    # Secure=True in compose mode when TLS is on OR behind an HTTPS upstream proxy
+    secure = bool(os.environ.get("HOST_BOTS_DIR")) and (
+        TLS_MODE != "off" or PORTAL_URL.startswith("https://")
+    )
     response.set_cookie(
         "cfm_session", token,
         httponly=True, secure=secure, samesite="lax",
@@ -1993,6 +2031,14 @@ async def api_auth_delete_user(username: str,
     del users[username]
     _save_users(users)
     return {"deleted": username}
+
+
+# --- Health ---
+
+@app.get("/api/health")
+async def api_health():
+    """Minimal health check — no auth required, no system info leaked."""
+    return {"ok": True}
 
 
 # --- Config ---
