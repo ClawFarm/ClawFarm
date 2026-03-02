@@ -28,7 +28,8 @@ botfarm/
 │   └── researcher/         # Research-focused (custom endpoint)
 ├── bots/                   # Runtime: each bot gets a subdirectory (gitignored)
 ├── network/setup-isolation.sh  # iptables rules for bot network isolation
-├── docker-compose.yml      # Production: dashboard + frontend + Caddy
+├── docker-compose.yml      # Production: pulls pre-built images from GHCR
+├── docker-compose.dev.yml  # Development: builds from local source
 ├── Caddyfile               # Initial Caddy config (overwritten by admin API)
 ├── certs/                  # Self-signed TLS cert (gitignored)
 ├── screenshots/            # UI screenshots (gitignored)
@@ -59,9 +60,12 @@ cd frontend && npm install && npm run dev
 
 ```bash
 cp .env.example .env  # Edit with your LLM provider details
-docker compose up --build -d
+docker compose up -d  # Pulls pre-built images from GHCR
 # Access at https://<server-ip>:8443 (default TLS_MODE=internal, self-signed cert)
 # HTTP :80 redirects to HTTPS :8443
+
+# For development (builds from source):
+docker compose -f docker-compose.dev.yml up --build -d
 ```
 
 Bot containers are also Docker containers created by the dashboard via the Docker socket — so the full stack is Docker-in-Docker (dashboard container → Docker socket → bot containers on the host).

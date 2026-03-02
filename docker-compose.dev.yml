@@ -1,6 +1,8 @@
 services:
   dashboard:
-    image: ghcr.io/clawfarm/clawfarm-dashboard:latest
+    build:
+      context: ./dashboard
+      network: host
     expose:
       - "8080"
     volumes:
@@ -19,7 +21,11 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: ghcr.io/clawfarm/clawfarm-frontend:latest
+    build:
+      context: ./frontend
+      network: host
+      args:
+        - API_URL=http://dashboard:8080
     expose:
       - "3000"
     environment:

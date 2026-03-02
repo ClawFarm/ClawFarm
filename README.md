@@ -173,6 +173,10 @@ Each bot runs on its own Docker bridge network. The `network/setup-isolation.sh`
 ## Development
 
 ```bash
+# Build from source (instead of pulling pre-built images)
+docker compose -f docker-compose.dev.yml up --build -d
+
+# Or run services directly for hot-reload:
 # Backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r dashboard/requirements.txt
@@ -184,3 +188,7 @@ cd frontend && npm install && npm run dev
 # Tests
 cd dashboard && python -m pytest tests/test_fleet.py -v
 ```
+
+## Releasing
+
+See [RELEASING.md](RELEASING.md) for the release process and Docker image publishing.
