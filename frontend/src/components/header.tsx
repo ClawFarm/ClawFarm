@@ -18,9 +18,7 @@ export function Header() {
           href="/"
           className="flex items-center gap-2 hover:opacity-80 transition-opacity shrink-0"
         >
-          <div className="h-7 w-7 rounded-md bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center">
-            <span className="text-emerald-400 text-xs font-bold">C</span>
-          </div>
+          <img src="/logo.svg" alt="ClawFarm" className="h-7 w-7 rounded-md" />
           <span className="text-sm font-semibold tracking-tight text-foreground hidden sm:inline">
             ClawFarm
           </span>
@@ -28,10 +26,10 @@ export function Header() {
 
         <div className="flex items-center gap-2 sm:gap-4 text-xs">
           {bots.length > 0 && (
-            <div className="flex items-center gap-1.5 text-emerald-400 shrink-0">
+            <div className="flex items-center gap-1.5 text-blue-400 shrink-0">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-400" />
               </span>
               <span>{running}<span className="hidden sm:inline"> active</span></span>
               <span className="text-muted-foreground hidden sm:inline">/ {bots.length}</span>

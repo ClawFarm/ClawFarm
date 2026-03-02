@@ -21,6 +21,7 @@ export interface Bot {
   forked_from: string | null;
   created_by: string | null;
   created_at: string | null;
+  template: string | null;
   backup_count: number;
   storage_bytes: number;
   cron_jobs: CronJob[];
@@ -40,6 +41,7 @@ export interface BotMeta {
   modified_at: string;
   forked_from: string | null;
   created_by: string | null;
+  template?: string | null;
   backups: Backup[];
 }
 

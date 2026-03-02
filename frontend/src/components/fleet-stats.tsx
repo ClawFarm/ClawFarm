@@ -68,7 +68,7 @@ export function FleetStats() {
             ? `of ${stats.total_bots} total (${stats.starting_bots} starting)`
             : `of ${stats.total_bots} running`
         }
-        accent="text-emerald-400"
+        accent="text-blue-400"
       />
       <HeroStat
         label="RAM Free"

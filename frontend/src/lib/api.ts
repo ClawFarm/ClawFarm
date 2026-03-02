@@ -13,8 +13,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error("Not authenticated");
   }
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(error.detail || "Request failed");
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    const err = new Error(body.detail || "Request failed");
+    (err as any).status = res.status;
+    throw err;
   }
   return res.json();
 }

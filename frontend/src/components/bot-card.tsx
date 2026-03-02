@@ -76,6 +76,9 @@ export function BotCard({ bot, onAction }: { bot: Bot; onAction: () => void }) {
           {bot.cron_jobs.length > 0 && (
             <MetaItem label="Cron" value={String(bot.cron_jobs.length)} />
           )}
+          {bot.template && bot.template !== "default" && (
+            <MetaItem label="Template" value={bot.template} />
+          )}
           {bot.created_by && (
             <MetaItem label="Creator" value={bot.created_by} />
           )}
