@@ -1900,6 +1900,12 @@ class TestSyncCaddyConfig:
         # Main server on fixed internal port (independent of CADDY_PORT)
         assert servers["main"]["listen"] == [":8080"]
 
+        # Off mode trusts private-range proxies for X-Forwarded-For
+        tp = servers["main"]["trusted_proxies"]
+        assert tp["source"] == "static"
+        assert "10.0.0.0/8" in tp["ranges"]
+        assert "172.16.0.0/12" in tp["ranges"]
+
     def test_custom_mode_tls_policies(self, monkeypatch, caddy_env):
         """Custom mode: cert file references in TLS config."""
         import app

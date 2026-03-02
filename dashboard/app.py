@@ -1614,6 +1614,17 @@ def _sync_caddy_config() -> None:
         }
         if tls_policy:
             main_server["tls_connection_policies"] = tls_policy
+        # In TLS_MODE=off, Caddy sits behind an upstream proxy (Traefik, nginx,
+        # Cloudflare Tunnel). Trust private-range IPs so Caddy reads the real
+        # client IP from X-Forwarded-For instead of replacing it.
+        if TLS_MODE == "off":
+            main_server["trusted_proxies"] = {
+                "source": "static",
+                "ranges": [
+                    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                    "127.0.0.0/8", "fc00::/7", "::1/128",
+                ],
+            }
 
         servers = {"main": main_server}
 
