@@ -27,6 +27,9 @@ wheels/
 # Playwright MCP logs
 .playwright-mcp/
 
+# Internal notes
+feedback.md
+
 # Screenshots
 screenshots/
 e2e-dashboard.png

@@ -1,5 +1,7 @@
 # ClawFarm
 
+[Website](https://clawfarm.dev) | [GitHub](https://github.com/clawfarm/clawfarm)
+
 Self-hosted fleet manager for [OpenClaw](https://github.com/openclaw/openclaw) AI agents.
 
 OpenClaw is a powerful autonomous AI agent, but it's designed as a **single-operator personal assistant** — one gateway process, one admin, CLI-driven setup. Running multiple agents means manually provisioning each instance, managing separate configs, ports, and TLS certs, with no isolation between them.
@@ -20,7 +22,7 @@ Think of it as **Portainer for OpenClaw** — the AI capabilities are 100% OpenC
 
 ```bash
 # 1. Clone & configure
-git clone <repo-url> && cd botfarm
+git clone https://github.com/clawfarm/clawfarm && cd clawfarm
 cp .env.example .env
 # Edit .env with your LLM provider details (see Provider Setup below)
 
@@ -115,23 +117,20 @@ Templates live in `bot-template/`. Each is a directory containing:
 
 - `openclaw.template.json` — OpenClaw config with `{{ENV_VAR}}` placeholders
 - `SOUL.md` — Bot personality
+- `template.meta.json` — Display metadata (description, env hints for the dashboard)
 
-The `default` template works with any OpenAI-compatible API. Create new templates by copying `default/` and editing. Templates appear in the dashboard's create-bot dropdown.
+Select the matching template when creating a bot in the dashboard.
 
-Example: an OpenAI-native template only needs an API key — no base URL or model list:
+| Template | Provider | Required env vars |
+|----------|----------|-------------------|
+| `default` | Anthropic (built-in) | `ANTHROPIC_API_KEY` |
+| `openai` | OpenAI (built-in) | `OPENAI_API_KEY` |
+| `minimax` | MiniMax (OpenAI-compatible) | `MINIMAX_API_KEY` |
+| `qwen` | Qwen/DashScope (OpenAI-compatible) | `QWEN_API_KEY` |
+| `custom-endpoint` | Any OpenAI-compatible server | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` |
+| `researcher` | Anthropic + web search | `ANTHROPIC_API_KEY`, `BRAVE_API_KEY` |
 
-```json
-{
-  "models": {
-    "providers": {
-      "openai": { "apiKey": "{{OPENAI_API_KEY}}" }
-    }
-  },
-  "agents": {
-    "defaults": { "model": "openai/gpt-4o" }
-  }
-}
-```
+**Built-in provider templates** (default, openai) use OpenClaw's native provider integration — just set an API key. **OpenAI-compatible templates** (minimax, qwen, custom-endpoint) connect to any `/v1/chat/completions` endpoint. Create new templates by copying an existing one and editing.
 
 ## Configuration
 

@@ -141,7 +141,7 @@ In Docker Compose mode, OpenClaw runs in `trusted-proxy` auth mode. Caddy handle
 In dev mode (no Caddy), OpenClaw uses default token auth. The gateway token is surfaced on the bot detail page and passed via URL hash (`#token=...`) when opening the Control UI.
 
 ### Backup/Rollback
-Backups are compressed `tar.gz` archives containing the full agent state: `config.json`, `SOUL.md`, and the entire `.openclaw/` directory (workspace, sessions, cron — excluding logs, `.bak` files, and temp files). Each backup records `size_bytes` in metadata.
+Backups are compressed `tar.gz` archives containing the full agent state: the entire `.openclaw/` directory (`openclaw.json`, workspace with `SOUL.md` and memories, sessions, cron — excluding logs, `.bak` files, and temp files). Each backup records `size_bytes` in metadata.
 
 **Storage:** By default, backups are stored in `bots/{name}/.backups/{timestamp}.tar.gz`. When `BACKUP_DIR` is set, backups go to `{BACKUP_DIR}/{bot_name}/{timestamp}.tar.gz` instead — allowing backups to survive bot deletion and be stored on a separate volume.
 
