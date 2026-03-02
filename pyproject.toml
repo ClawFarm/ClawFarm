@@ -26,6 +26,9 @@ dev = [
     "ruff>=0.15",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["dashboard"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
