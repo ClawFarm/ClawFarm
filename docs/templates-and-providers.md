@@ -144,6 +144,12 @@ Templates use `{{VAR_NAME}}` placeholders that are replaced with environment var
 
 If an env var is not set, the placeholder is preserved as-is.
 
+## Post-Creation Config Changes
+
+Templates are only applied at bot creation time. Once a bot is created, its `openclaw.json` belongs to the bot — ClawFarm never overwrites it. Any changes made after creation (through the OpenClaw UI, direct file editing, or the bot itself) persist through container restarts, host reboots, and dashboard restarts.
+
+The only exception is a temporary startup migration that removes `gateway.controlUi.basePath` if present — this is a workaround until an upstream OpenClaw fix (PR #30228) ships in a released image, at which point the migration will be removed. No other fields are touched.
+
 ## Creating a Custom Template
 
 1. Create a directory under `bot-template/`:
