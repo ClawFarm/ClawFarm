@@ -1,0 +1,22 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.4
+    hooks:
+      - id: ruff
+        files: '^dashboard/'
+
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint (frontend)
+        entry: bash -c 'cd frontend && npm run lint'
+        language: system
+        files: '^frontend/src/'
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest (backend)
+        entry: bash -c 'cd dashboard && ../.venv/bin/python -m pytest tests/test_fleet.py -q'
+        language: system
+        files: '^dashboard/'
+        pass_filenames: false

@@ -37,27 +37,42 @@ cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 cd frontend && npm install && npm run dev
 ```
 
+## Pre-commit Hooks
+
+The repo uses [pre-commit](https://pre-commit.com/) to run linters and tests before each commit:
+
+```bash
+uv pip install pre-commit   # or: pip install pre-commit
+pre-commit install           # one-time setup
+```
+
+Hooks run automatically on `git commit`. To run manually:
+
+```bash
+pre-commit run --all-files
+```
+
+| Hook | Runs on | What it checks |
+|------|---------|----------------|
+| **ruff** | `dashboard/` | Python lint (pycodestyle, pyflakes, isort) |
+| **eslint** | `frontend/src/` | TypeScript/React lint (Next.js rules) |
+| **pytest** | `dashboard/` | Backend unit + integration tests |
+
 ## Making Changes
 
 1. Fork the repo and create a branch from `master`.
 2. Make your changes.
-3. Run the checks below before submitting a PR.
+3. Pre-commit hooks run automatically, or run `pre-commit run --all-files` to check everything.
 
 ## Pre-PR Checklist
 
-**Backend:**
+The pre-commit hooks cover linting and tests. CI additionally runs:
+
 ```bash
-ruff check dashboard/              # Lint (zero errors required)
-cd dashboard && python -m pytest tests/test_fleet.py -v  # Tests
+cd frontend && npm run build        # Type-check + full Next.js build
 ```
 
-**Frontend:**
-```bash
-cd frontend && npm run lint         # ESLint
-cd frontend && npm run build        # Type-check + build
-```
-
-All four checks run in CI on every PR.
+All checks run in CI on every PR.
 
 ## PR Guidelines
 

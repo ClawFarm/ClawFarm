@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ export function Header() {
           href="/"
           className="flex items-center gap-2 hover:opacity-80 transition-opacity shrink-0"
         >
-          <img src="/logo.svg" alt="ClawFarm" className="h-7 w-7 rounded-md" />
+          <Image src="/logo.svg" alt="ClawFarm" width={28} height={28} className="h-7 w-7 rounded-md" />
           <span className="text-sm font-semibold tracking-tight text-foreground hidden sm:inline">
             ClawFarm
           </span>

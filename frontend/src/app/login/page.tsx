@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -41,7 +42,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          <img src="/logo.svg" alt="ClawFarm" className="mx-auto mb-2 h-10 w-10 rounded-lg" />
+          <Image src="/logo.svg" alt="ClawFarm" width={40} height={40} className="mx-auto mb-2 h-10 w-10 rounded-lg" />
           <CardTitle className="text-lg">ClawFarm</CardTitle>
           <p className="text-xs text-muted-foreground">Sign in to manage your fleet</p>
         </CardHeader>
