@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest==9.0.2",
+    "pytest-cov>=6.0",
     "httpx==0.28.1",
     "pre-commit>=4.0",
     "ruff>=0.15",
@@ -38,3 +39,11 @@ select = ["E", "W", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["dashboard/tests"]
+
+[tool.coverage.run]
+source = ["dashboard"]
+omit = ["dashboard/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
