@@ -650,6 +650,7 @@ def write_bot_files(name: str, config: dict, soul: str | None = None,
         "modified_at": now,
         "forked_from": forked_from,
         "created_by": created_by,
+        "template": template,
         "backups": [],
     }
     write_meta(name, meta)
@@ -842,7 +843,7 @@ def _launch_container(name: str, bot_dir: Path, template: str = "default") -> di
         },
     )
 
-    _sync_caddy_config()
+    _sync_caddy_config_async()
 
     return {
         "name": name,
@@ -939,6 +940,7 @@ def list_bots() -> list[dict]:
             "forked_from": meta.get("forked_from"),
             "created_by": meta.get("created_by"),
             "created_at": meta.get("created_at"),
+            "template": meta.get("template"),
             "backup_count": len(meta.get("backups", [])),
             "storage_bytes": get_bot_storage(name),
             "cron_jobs": get_bot_cron_jobs(name),
@@ -974,7 +976,7 @@ def delete_bot(name: str) -> dict:
     if bot_dir.exists():
         shutil.rmtree(bot_dir)
 
-    _sync_caddy_config()
+    _sync_caddy_config_async()
 
     return {"deleted": name}
 
@@ -1497,7 +1499,7 @@ def _sync_caddy_config() -> None:
                 # Public frontend routes (login, assets)
                 {
                     "match": [{"path": [
-                        "/login", "/login/*", "/_next/*", "/favicon.ico",
+                        "/login", "/login/*", "/_next/*", "/favicon.ico", "/logo.svg",
                     ]}],
                     "handle": [{
                         "handler": "reverse_proxy",
@@ -1605,6 +1607,26 @@ def _sync_caddy_config() -> None:
         )
     except Exception:
         pass  # Caddy not running (dev mode) — silently ignore
+
+
+def _sync_caddy_config_async() -> None:
+    """Fire-and-forget Caddy config sync in a background thread.
+
+    Decouples the Caddy admin API POST from the API response path so that
+    Docker network churn (ERR_NETWORK_CHANGED) doesn't hit the browser while
+    the HTTP response is still in-flight.  A 1-second delay ensures the
+    response has been flushed before Caddy reloads.  Safe because
+    _sync_caddy_config() is idempotent (full-state reconciliation) and Caddy
+    serialises admin requests internally.
+    """
+    import time as _time
+
+    def _delayed_sync():
+        _time.sleep(1)
+        _sync_caddy_config()
+
+    threading.Thread(target=_delayed_sync, daemon=True,
+                     name="caddy-sync").start()
 
 
 # ---------------------------------------------------------------------------
@@ -2039,7 +2061,7 @@ async def api_start_bot(name: str, ctx: dict = Depends(_require_bot_access)):
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
         container.start()
-        _sync_caddy_config()
+        _sync_caddy_config_async()
         return {"name": name, "status": _effective_status(container)}
     except docker.errors.NotFound:
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
@@ -2052,7 +2074,7 @@ async def api_stop_bot(name: str, ctx: dict = Depends(_require_bot_access)):
     try:
         container = client.containers.get(f"openclaw-bot-{name}")
         container.stop()
-        _sync_caddy_config()
+        _sync_caddy_config_async()
         return {"name": name, "status": "stopped"}
     except docker.errors.NotFound:
         raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
