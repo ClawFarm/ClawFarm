@@ -26,7 +26,7 @@ OpenClaw is a powerful autonomous AI agent, but it's designed as a **single-oper
 
 ClawFarm wraps OpenClaw in operational infrastructure:
 
-- **Container isolation** — each agent runs in its own Docker container and network. Agents can't see each other or reach your LAN.
+- **Container isolation** — each agent runs in its own Docker container and network. Agents can't see each other, and optional iptables rules block LAN access.
 - **Web dashboard** — create, start/stop, duplicate, fork, and delete agents from a browser instead of the command line.
 - **Multi-user RBAC** — different users own different agents, with per-agent access control enforced at the reverse proxy layer.
 - **Backup & rollback** — scheduled hourly backups with retention policies and one-click restore per agent.
@@ -45,7 +45,7 @@ cp .env.example .env
 # Edit .env with your LLM provider details (see Provider Setup below)
 
 # 2. Launch
-docker compose up --build -d
+docker compose up -d
 
 # 3. Open https://<your-ip>:8443
 # Check logs for admin password: docker compose logs dashboard | head -20
@@ -109,25 +109,28 @@ PORTAL_URL=https://farm.example.com   # Your proxy's external URL (for CORS + re
 
 ## Provider Setup
 
-### Cloud APIs
+### Built-in Providers (Anthropic, OpenAI)
 
-Set three env vars and you're done:
-
-| Provider | `LLM_BASE_URL` | `LLM_MODEL` | Notes |
-|----------|-----------------|-------------|-------|
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o` | |
-| Anthropic | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` | |
-| OpenRouter | `https://openrouter.ai/api/v1` | `openai/gpt-4o` | Aggregator — any model |
-
-### Local Models (vLLM, Ollama, LiteLLM)
+Use the `default` or `openai` template — just set the API key:
 
 ```env
-LLM_BASE_URL=http://10.0.0.5:8000/v1
-LLM_MODEL=Qwen3.5-122B-A10B
-LLM_API_KEY=none
-LLM_CONTEXT_WINDOW=262144
-LLM_MAX_TOKENS=8192
+ANTHROPIC_API_KEY=sk-ant-...    # for the "default" template
+OPENAI_API_KEY=sk-...           # for the "openai" template
 ```
+
+### OpenAI-Compatible Endpoints (vLLM, Ollama, OpenRouter, etc.)
+
+Use the `custom-endpoint` template with three env vars:
+
+```env
+LLM_BASE_URL=http://10.0.0.5:8000/v1   # any /v1/chat/completions endpoint
+LLM_MODEL=Qwen3.5-122B-A10B
+LLM_API_KEY=none                         # or your API key
+LLM_CONTEXT_WINDOW=262144               # optional (default: 128000)
+LLM_MAX_TOKENS=8192                      # optional (default: 8192)
+```
+
+This works with any OpenAI-compatible server — vLLM, Ollama, LiteLLM, OpenRouter, etc.
 
 ## Bot Templates
 
@@ -146,7 +149,7 @@ Select the matching template when creating a bot in the dashboard.
 | `minimax` | MiniMax (OpenAI-compatible) | `MINIMAX_API_KEY` |
 | `qwen` | Qwen/DashScope (OpenAI-compatible) | `QWEN_API_KEY` |
 | `custom-endpoint` | Any OpenAI-compatible server | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` |
-| `researcher` | Anthropic + web search | `ANTHROPIC_API_KEY`, `BRAVE_API_KEY` |
+| `researcher` | Custom endpoint + web search | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`, `BRAVE_API_KEY` |
 
 **Built-in provider templates** (default, openai) use OpenClaw's native provider integration — just set an API key. **OpenAI-compatible templates** (minimax, qwen, custom-endpoint) connect to any `/v1/chat/completions` endpoint. Create new templates by copying an existing one and editing.
 
