@@ -25,12 +25,16 @@ botfarm/
 │   ├── minimax/            # MiniMax (budget-friendly)
 │   ├── qwen/               # Qwen via DashScope (budget-friendly)
 │   ├── custom-endpoint/    # Self-hosted vLLM, Ollama, LM Studio
-│   └── researcher/         # Research-focused (custom endpoint)
+│   └── researcher/         # Research-focused (custom endpoint + web search)
 ├── bots/                   # Runtime: each bot gets a subdirectory (gitignored)
 ├── network/setup-isolation.sh  # iptables rules for bot network isolation
 ├── docker-compose.yml      # Production: pulls pre-built images from GHCR
 ├── docker-compose.dev.yml  # Development: builds from local source
 ├── Caddyfile               # Initial Caddy config (overwritten by admin API)
+├── pyproject.toml          # Ruff linter config
+├── .github/workflows/      # CI (lint + test + build) and release (Docker publish)
+├── CONTRIBUTING.md         # Contributor guidelines
+├── RELEASING.md            # Release process docs
 ├── certs/                  # Self-signed TLS cert (gitignored)
 ├── screenshots/            # UI screenshots (gitignored)
 ├── .env                    # Local config (gitignored)
@@ -83,6 +87,18 @@ cd dashboard && python -m pytest tests/test_fleet.py -v
 
 All tests are filesystem-based with monkeypatched paths — no Docker needed.
 
+## CI & Linting
+
+**Ruff** enforces Python style (`pyproject.toml`): E/W (pycodestyle), F (pyflakes), I (isort), line-length 120, target py312.
+
+**GitHub Actions** (`.github/workflows/ci.yml`) runs four parallel jobs on every push/PR to `master`:
+1. `backend-lint` — ruff via `astral-sh/ruff-action`
+2. `backend-test` — pytest
+3. `frontend-lint` — ESLint
+4. `frontend-build` — TypeScript check + Next.js build
+
+**Release workflow** (`.github/workflows/release.yml`) triggers on `v*` tags: runs CI, builds multi-arch Docker images (amd64 + arm64), pushes to GHCR, creates GitHub Release. See `RELEASING.md`.
+
 ## Key Architecture Decisions
 
 ### Bot Templates
@@ -100,6 +116,7 @@ Templates live in `bot-template/`. Each template is a directory containing:
 | `minimax` | MiniMax | OAI-compatible | `MINIMAX_API_KEY` |
 | `qwen` | Qwen/DashScope | OAI-compatible | `QWEN_API_KEY` |
 | `custom-endpoint` | Self-hosted (vLLM, Ollama) | OAI-compatible | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` |
+| `researcher` | Any (custom endpoint + web search) | OAI-compatible | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`, `BRAVE_API_KEY` |
 
 **Built-in provider templates** (Anthropic, OpenAI) are minimal — they don't define `models.providers` because OpenClaw auto-detects the provider from the API key env var. The API key is forwarded to bot containers via Docker `environment`.
 
@@ -287,7 +304,6 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 | `BOT_PORT_START` | No | Start of port range (default: 3001). Dev-mode only — in compose mode, bots use path-based routing under `:8443` |
 | `BOT_PORT_END` | No | End of port range (default: 3100). Dev-mode only |
 | `HOST_BOTS_DIR` | Docker Compose | **Host-side** path to `bots/` dir — required when dashboard runs in a container (see workaround above) |
-| `DASHBOARD_PORT` | No | Frontend port (default: 3000). Dev-mode only — in compose mode, Caddy is the single entry point |
 | `CADDY_PORT` | No | Caddy listening port (default: 8443) |
 | `CADDY_ADMIN_URL` | Docker Compose | Caddy admin API URL (default: `http://caddy:2019`) |
 | `PORTAL_URL` | No | External base URL override (auto-derived in `acme` mode from `DOMAIN`, not needed in `internal`/`custom` mode) |
@@ -312,3 +328,11 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 
 ### Adding a new UI component
 Frontend uses shadcn/ui components in `frontend/src/components/ui/`. Custom components go in `frontend/src/components/`. Data fetching uses SWR hooks in `frontend/src/hooks/`.
+
+## TODO
+
+- **Remove cookie-based WebSocket workaround** — OpenClaw PR #30228 (merged) fixes Control UI to include `basePath` in WebSocket URLs. Once a new `ghcr.io/openclaw/openclaw` image ships with this fix, we can remove the `cfm_bot` cookie hack and use native `basePath`-based routing instead. This simplifies the Caddy config significantly. Changes needed:
+  1. Restore `basePath` in `_prepare_openclaw_home()` gateway config
+  2. Remove `set_cookie`, `strip_path_prefix`, and root WebSocket `header_regexp` matcher from `_sync_caddy_config()`
+  3. Flip startup migration in `_lifespan()` from "remove basePath" to "ensure basePath is set"
+  4. Pin `OPENCLAW_IMAGE` to the release that includes the fix
