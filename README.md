@@ -19,7 +19,9 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshot-dashboard.png" width="800" alt="ClawFarm dashboard showing five running AI agents">
+  <img src="assets/screenshot-dashboard.png" width="800" alt="ClawFarm dashboard showing a fleet of running AI agents">
+  <br>
+  <img src="assets/screenshot-create-agent.png" width="800" alt="Creating a new agent with template selection and personality configuration">
 </p>
 
 OpenClaw is a powerful autonomous AI agent, but it's designed as a **single-operator personal assistant** — one gateway process, one admin, CLI-driven setup. Running multiple agents means manually provisioning each instance, managing separate configs, ports, and TLS certs, with no isolation between them.
