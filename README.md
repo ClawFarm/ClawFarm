@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://clawfarm.dev">Website</a> · <a href="https://github.com/clawfarm/clawfarm">GitHub</a>
+  <a href="https://clawfarm.dev">Website</a>
 </p>
 
 <p align="center">
