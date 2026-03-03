@@ -48,6 +48,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - id: meta-network
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/clawfarm/clawfarm-network
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./network
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta-network.outputs.tags }}
+          labels: ${{ steps.meta-network.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - id: meta-frontend
         uses: docker/metadata-action@v5
         with:
