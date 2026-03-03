@@ -11,4 +11,14 @@ if [ -S /var/run/docker.sock ]; then
   usermod -aG "$SOCK_GROUP" botfarm 2>/dev/null || true
 fi
 
+# Ensure data directories are writable by the app user.
+# Docker creates bind-mount directories as root:root when they don't exist
+# on the host before `docker compose up` (docker/compose#3270).
+if [ -d "/data/bots" ]; then
+  chown botfarm:botfarm /data/bots 2>/dev/null || true
+fi
+if [ -d "/data/backups" ]; then
+  chown botfarm:botfarm /data/backups 2>/dev/null || true
+fi
+
 exec gosu botfarm "$@"

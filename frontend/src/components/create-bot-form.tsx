@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import type { Template } from "@/lib/types";
 
 export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
@@ -40,6 +41,10 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
     setError("");
     try {
       await api.createBot({ name, soul: soul || undefined, template, network_isolation: networkIsolation });
+      const sanitized = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-{2,}/g, "-").replace(/^-|-$/g, "").slice(0, 48);
+      if (sanitized !== name) {
+        toast.info(`Created as "${sanitized}"`);
+      }
       setName("");
       setSoul("");
       setTemplate("default");

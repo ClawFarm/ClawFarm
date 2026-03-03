@@ -19,6 +19,9 @@ htmlcov/
 # Bot runtime data
 /bots/
 
+# Backups
+/backups/
+
 # Logs
 *.log
 

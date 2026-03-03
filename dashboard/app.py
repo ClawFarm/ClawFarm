@@ -1975,6 +1975,19 @@ async def _lifespan(app: FastAPI):
         )
     else:
         _bootstrap_admin()
+    # Check backup directory writability early so admins see the problem in logs
+    if BACKUP_DIR:
+        try:
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            _test = BACKUP_DIR / ".write_test"
+            _test.touch()
+            _test.unlink()
+        except PermissionError:
+            log.error(
+                "BACKUP_DIR %s is not writable by UID %d — "
+                "backups will fail. Fix with: chown %d:%d %s",
+                BACKUP_DIR, os.getuid(), os.getuid(), os.getgid(), BACKUP_DIR,
+            )
     # Ensure Caddy is connected to all existing bot networks on startup
     if os.environ.get("HOST_BOTS_DIR"):
         try:
@@ -2479,6 +2492,8 @@ async def api_create_backup(name: str, ctx: dict = Depends(_require_bot_access))
         return create_backup(name)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=503, detail=f"Backup directory not writable: {e}")
 
 
 @app.get("/api/bots/{name}/backups")
