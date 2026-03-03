@@ -1141,13 +1141,12 @@ def get_bot_stats(name: str) -> dict:
     stats = container.stats(stream=False)
     attrs = container.attrs
 
-    # CPU calculation
+    # CPU calculation — percentage of total CPU capacity (0–100%)
     cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
                 stats["precpu_stats"]["cpu_usage"]["total_usage"]
     system_delta = stats["cpu_stats"]["system_cpu_usage"] - \
                    stats["precpu_stats"]["system_cpu_usage"]
-    num_cpus = stats["cpu_stats"].get("online_cpus", 1)
-    cpu_percent = (cpu_delta / system_delta * num_cpus * 100.0) if system_delta > 0 else 0.0
+    cpu_percent = (cpu_delta / system_delta * 100.0) if system_delta > 0 else 0.0
 
     # Memory
     mem_usage = stats["memory_stats"].get("usage", 0)
@@ -1211,14 +1210,13 @@ def _collect_bot_stats(c) -> dict:
         stats = c.stats(stream=False)
         attrs = c.attrs
 
-        # CPU
+        # CPU — percentage of total CPU capacity (0–100%)
         cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
                     stats["precpu_stats"]["cpu_usage"]["total_usage"]
         system_delta = stats["cpu_stats"]["system_cpu_usage"] - \
                        stats["precpu_stats"]["system_cpu_usage"]
-        num_cpus = stats["cpu_stats"].get("online_cpus", 1)
         if system_delta > 0:
-            result["cpu"] = cpu_delta / system_delta * num_cpus * 100.0
+            result["cpu"] = cpu_delta / system_delta * 100.0
 
         # Memory
         result["mem"] = stats["memory_stats"].get("usage", 0) / (1024 * 1024)

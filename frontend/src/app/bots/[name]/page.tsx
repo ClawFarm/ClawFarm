@@ -1,7 +1,8 @@
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,9 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
   const decodedName = decodeURIComponent(name);
   const { detail, isLoading, mutate } = useBotDetail(decodedName);
   const config = useConfig();
+  const router = useRouter();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   if (isLoading) {
     return (
@@ -92,7 +96,7 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
                   <div className="font-medium">{formatBytes(detail.storage_bytes)}</div>
                 </div>
               </div>
-              {detail.token_usage && detail.token_usage.total_tokens > 0 && (
+              {detail.token_usage && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
                   <div>
                     <span className="text-muted-foreground">Total Tokens</span>
@@ -106,12 +110,10 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
                     <span className="text-muted-foreground">Output</span>
                     <div className="font-medium">{formatTokens(detail.token_usage.output_tokens)}</div>
                   </div>
-                  {detail.token_usage.context_tokens > 0 && (
-                    <div>
-                      <span className="text-muted-foreground">Context Window</span>
-                      <div className="font-medium">{formatTokens(detail.token_usage.context_tokens)}</div>
-                    </div>
-                  )}
+                  <div>
+                    <span className="text-muted-foreground">Model</span>
+                    <div className="font-medium truncate">{detail.token_usage.model || "—"}</div>
+                  </div>
                 </div>
               )}
               {!detail.ui_path && detail.gateway_token && (
@@ -162,6 +164,32 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
                   >
                     <Button size="sm" variant="secondary">Open UI</Button>
                   </a>
+                )}
+                {!confirmDelete ? (
+                  <Button size="sm" variant="destructive" onClick={() => setConfirmDelete(true)}>Delete</Button>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={deleting}
+                      onClick={async () => {
+                        setDeleting(true);
+                        try {
+                          await api.deleteBot(detail!.name);
+                          toast.success(`Deleted "${detail!.name}"`);
+                          router.push("/");
+                        } catch (err) {
+                          toast.error(err instanceof Error ? err.message : "Delete failed");
+                          setDeleting(false);
+                          setConfirmDelete(false);
+                        }
+                      }}
+                    >
+                      {deleting ? "Deleting..." : "Confirm delete"}
+                    </Button>
+                    <Button size="sm" variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+                  </>
                 )}
               </div>
             </CardContent>

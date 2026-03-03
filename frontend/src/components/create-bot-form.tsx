@@ -20,6 +20,7 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
+  const [attempted, setAttempted] = useState(false);
 
   // Pre-fetch templates on mount so they're ready when the form opens
   useEffect(() => {
@@ -34,8 +35,13 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
     }
   }
 
+  const selectedTemplate = templates.find((t) => t.name === template);
+  const nameEmpty = attempted && !name.trim();
+  const hasMissingVars = selectedTemplate?.missing_vars && selectedTemplate.missing_vars.length > 0;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setAttempted(true);
     if (!name.trim()) return;
     setLoading(true);
     setError("");
@@ -51,6 +57,7 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
       setSoulCustomized(false);
       setNetworkIsolation(true);
       setShowConfig(false);
+      setAttempted(false);
       setOpen(false);
       onCreated();
     } catch (err) {
@@ -59,8 +66,6 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
       setLoading(false);
     }
   }
-
-  const selectedTemplate = templates.find((t) => t.name === template);
 
   return (
     <div className="px-6 pt-5">
@@ -116,10 +121,15 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
                 ))}
               </div>
             )}
-            {selectedTemplate?.missing_vars && selectedTemplate.missing_vars.length > 0 && (
-              <p className="text-xs text-amber-500 mt-1.5">
-                Missing env: {selectedTemplate.missing_vars.join(", ")}
-              </p>
+            {hasMissingVars && (
+              <div className={cn(
+                "text-xs mt-1.5 px-2.5 py-1.5 rounded-md border",
+                attempted
+                  ? "text-destructive bg-destructive/5 border-destructive/30"
+                  : "text-amber-500 bg-amber-500/5 border-amber-500/20"
+              )}>
+                Missing env: {selectedTemplate!.missing_vars.join(", ")}
+              </div>
             )}
             {selectedTemplate?.config_preview && (
               <div>
@@ -139,12 +149,19 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
               </div>
             )}
           </div>
-          <Input
-            placeholder="Agent name (e.g. research-bot)"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoFocus
-          />
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Agent name</label>
+            <Input
+              placeholder="e.g. research-bot"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              className={nameEmpty ? "border-destructive focus-visible:ring-destructive" : ""}
+            />
+            {nameEmpty && (
+              <p className="text-xs text-destructive">Agent name is required</p>
+            )}
+          </div>
           <Textarea
             placeholder="SOUL.md — custom personality (optional)"
             value={soul}
@@ -191,6 +208,7 @@ export function CreateBotForm({ onCreated }: { onCreated: () => void }) {
                 setOpen(false);
                 setShowConfig(false);
                 setError("");
+                setAttempted(false);
               }}
             >
               Cancel
