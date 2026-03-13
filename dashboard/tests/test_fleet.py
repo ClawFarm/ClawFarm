@@ -1987,14 +1987,12 @@ class TestSyncCaddyConfig:
                         bot_names_found.add(name)
         assert bot_names_found == {"alice", "bob"}
 
-        # Bot route handlers: forward_auth + set-cookie + strip_prefix + proxy
+        # Bot route handlers: forward_auth + proxy (basePath routing, no strip_prefix)
         for r in bot_routes:
             handlers = r["handle"]
             handler_types = [h["handler"] for h in handlers]
-            # Auth enabled: forward_auth (reverse_proxy) + headers (cookie) + rewrite (strip) + reverse_proxy (bot)
+            # Auth enabled: forward_auth (reverse_proxy) + reverse_proxy (bot)
             assert "reverse_proxy" in handler_types
-            assert "rewrite" in handler_types
-            assert "headers" in handler_types
 
         # Bot routes are before the catch-all (last route)
         last_route = routes[-1]
@@ -2114,8 +2112,8 @@ class TestSyncCaddyConfig:
         assert fwd_handler["handler"] == "headers"
         assert fwd_handler["request"]["set"]["X-Forwarded-User"] == ["dev"]
 
-    def test_bot_route_websocket_cookie_routing(self, monkeypatch, caddy_env):
-        """Bot routes include WebSocket cookie matcher for root / connections."""
+    def test_bot_route_path_only_matching(self, monkeypatch, caddy_env):
+        """Bot routes use path-only matching (basePath handles WebSocket natively)."""
         import app
         monkeypatch.setattr(app, "TLS_MODE", "internal")
         monkeypatch.setattr(app, "AUTH_DISABLED", True)  # simpler to inspect
@@ -2136,21 +2134,11 @@ class TestSyncCaddyConfig:
         assert len(bot_routes) == 1
         match_clauses = bot_routes[0]["match"]
 
-        # Should have 2 match clauses: path match and WS cookie match
-        assert len(match_clauses) == 2
-
-        # First: path match
+        # Single path-only match clause (no cookie/WS workaround)
+        assert len(match_clauses) == 1
         assert "/claw/mybot/*" in match_clauses[0]["path"]
         assert "/claw/mybot" in match_clauses[0]["path"]
-
-        # Second: root WS with cookie
-        ws_match = match_clauses[1]
-        assert ws_match["path"] == ["/"]
-        assert ws_match["header"]["Upgrade"] == ["websocket"]
-        # Cookie header_regexp key must be the header name "Cookie"
-        assert "Cookie" in ws_match["header_regexp"]
-        assert ws_match["header_regexp"]["Cookie"]["name"] == "cfm_bot"
-        assert "mybot" in ws_match["header_regexp"]["Cookie"]["pattern"]
+        assert "header_regexp" not in match_clauses[0]
 
     def test_portal_url_in_redirect(self, monkeypatch, caddy_env):
         """When PORTAL_URL is set, redirect and login URLs use it."""

@@ -758,6 +758,7 @@ def _prepare_openclaw_home(bot_dir: Path, soul_text: str, trusted_proxies: list[
         "gateway": {
             "controlUi": {
                 "dangerouslyAllowHostHeaderOriginFallback": True,
+                **({"basePath": f"/claw/{bot_name}"} if os.environ.get("HOST_BOTS_DIR") else {}),
             },
             "trustedProxies": trusted_proxies or ["127.0.0.1"],
         },
@@ -829,7 +830,10 @@ def _launch_container(name: str, bot_dir: Path, template: str = "default",
     port = allocate_port()
     client = _get_client()
     network_name = f"openclaw-net-{name}"
-    client.networks.create(network_name, driver="bridge")
+    try:
+        client.networks.create(network_name, driver="bridge")
+    except docker.errors.APIError:
+        pass  # Network already exists (e.g. container recreation)
 
     container_name = f"openclaw-bot-{name}"
     image = os.environ.get("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:latest")
@@ -883,7 +887,8 @@ def _launch_container(name: str, bot_dir: Path, template: str = "default",
         network=network_name,
         restart_policy={"Name": "unless-stopped"},
         healthcheck={
-            "Test": ["CMD", "wget", "-qO-", "--spider", "http://localhost:18789/"],
+            "Test": ["CMD", "wget", "-qO-", "--spider",
+                     f"http://localhost:18789/claw/{name}/" if in_compose else "http://localhost:18789/"],
             "Interval": 3_000_000_000,       # 3s (nanoseconds)
             "Timeout": 2_000_000_000,        # 2s
             "StartPeriod": 90_000_000_000,   # 90s grace (gateway takes ~60s to boot)
@@ -1729,10 +1734,8 @@ def _sync_caddy_config() -> None:
             ]
 
         # Path-based bot routes — insert before catch-all frontend route.
-        # Caddy strips /claw/{name} prefix before proxying to the bot, so
-        # OpenClaw serves everything at root (no basePath needed).
-        # OpenClaw Control UI connects WebSocket to wss://{host}/ (root),
-        # so we set a cfm_bot cookie and route root WS via that cookie.
+        # OpenClaw serves with basePath=/claw/{name}, so no strip_path_prefix needed.
+        # WebSocket URLs include basePath natively (upstream PR #30228).
         if os.environ.get("HOST_BOTS_DIR"):
             for c in containers:
                 name = c.labels.get("openclaw.name", "")
@@ -1740,35 +1743,16 @@ def _sync_caddy_config() -> None:
                     continue
                 container_name = f"openclaw-bot-{name}"
                 bot_proxy = {"handler": "reverse_proxy", "upstreams": [{"dial": f"{container_name}:18789"}]}
-                strip_prefix = {"handler": "rewrite", "strip_path_prefix": f"/claw/{name}"}
-                cookie_flags = "Path=/; HttpOnly; SameSite=Lax"
-                if TLS_MODE != "off" or PORTAL_URL.startswith("https://"):
-                    cookie_flags += "; Secure"
-                set_cookie = {"handler": "headers", "response": {"set": {
-                    "Set-Cookie": [f"cfm_bot={name}; {cookie_flags}"],
-                }}}
-                ws_cookie_re = f"(?:^|;\\s*)cfm_bot={re.escape(name)}(?:;|$)"
                 if AUTH_DISABLED:
                     fwd_user = {"handler": "headers", "request": {"set": {"X-Forwarded-User": ["dev"]}}}
-                    handlers = [fwd_user, set_cookie, strip_prefix, bot_proxy]
+                    handlers = [fwd_user, bot_proxy]
                 else:
                     handlers = [
                         _forward_auth_handler(extra_headers={"X-Original-Bot": [name]}, redirect_on_fail=True),
-                        set_cookie,
-                        strip_prefix,
                         bot_proxy,
                     ]
-                # Bot route: matches path /claw/{name}/* OR root / WebSocket
-                # with cfm_bot cookie. strip_path_prefix is a no-op for root /.
                 main_routes.insert(-1, {
-                    "match": [
-                        {"path": [f"/claw/{name}/*", f"/claw/{name}"]},
-                        {
-                            "path": ["/"],
-                            "header": {"Upgrade": ["websocket"]},
-                            "header_regexp": {"Cookie": {"name": "cfm_bot", "pattern": ws_cookie_re}},
-                        },
-                    ],
+                    "match": [{"path": [f"/claw/{name}/*", f"/claw/{name}"]}],
                     "handle": handlers,
                 })
 
@@ -2011,7 +1995,7 @@ async def _lifespan(app: FastAPI):
                         _apply_network_isolation(client, f"openclaw-net-{name}", name)
         except Exception:
             pass
-        # Migrate existing bots: remove basePath (Caddy strip_path_prefix handles it)
+        # Migrate existing bots: ensure basePath is set (native basePath routing)
         for bot_dir in BOTS_DIR.iterdir():
             if not bot_dir.is_dir() or bot_dir.name.startswith("."):
                 continue
@@ -2020,9 +2004,9 @@ async def _lifespan(app: FastAPI):
                 continue
             try:
                 cfg = json.loads(oc_cfg.read_text())
-                cui = cfg.get("gateway", {}).get("controlUi", {})
-                if "basePath" in cui:
-                    del cui["basePath"]
+                expected = f"/claw/{bot_dir.name}"
+                if cfg.get("gateway", {}).get("controlUi", {}).get("basePath") != expected:
+                    cfg.setdefault("gateway", {}).setdefault("controlUi", {})["basePath"] = expected
                     oc_cfg.write_text(json.dumps(cfg, indent=2))
             except (json.JSONDecodeError, OSError):
                 pass
@@ -2389,7 +2373,14 @@ async def api_start_bot(name: str, ctx: dict = Depends(_require_bot_access)):
         _sync_caddy_config_async()
         return {"name": name, "status": _effective_status(container)}
     except docker.errors.NotFound:
-        raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
+        # Container gone but bot dir exists — recreate with current image
+        bot_dir = BOTS_DIR / name
+        if not bot_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Bot {name!r} not found")
+        meta = read_meta(name)
+        template = meta.get("template", "default")
+        isolation = meta.get("network_isolation", True)
+        return _launch_container(name, bot_dir, template=template, network_isolation=isolation)
 
 
 @app.post("/api/bots/{name}/stop")

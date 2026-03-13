@@ -211,18 +211,16 @@ Single entry point for all services via Caddy on port 8443 (HTTPS). This is requ
 
 **Port architecture:** Caddy listens on a fixed internal port (8080) inside the container. Docker Compose maps the configurable host port (`CADDY_PORT`, default 8443) to it: `${CADDY_PORT:-8443}:8080`. This decoupling means `TLS_MODE` changes never require port changes. See `docs/deployment.md` for full deployment mode documentation.
 
-**Architecture:** Path-based routing under the single `:8443` port. Each bot is accessible at `https://host:8443/claw/{name}/`. Caddy uses `strip_path_prefix` to strip `/claw/{name}` before proxying to the bot — OpenClaw serves at root (no `basePath` config needed). This eliminates exposing 100 ports — only `:8443` and `:80` are published.
+**Architecture:** Path-based routing under the single `:8443` port. Each bot is accessible at `https://host:8443/claw/{name}/`. OpenClaw serves with `basePath=/claw/{name}` natively — no path rewriting needed. This eliminates exposing 100 ports — only `:8443` and `:80` are published.
 
 **Route structure:**
 - `:8443/` and `:8443/*` → Next.js frontend (`frontend:3000`)
 - `:8443/api/*` → FastAPI dashboard (`dashboard:8080`)
 - `:8443/claw/{name}/*` → strip prefix → reverse proxy to `openclaw-bot-{name}:18789`
 
-**WebSocket routing:** OpenClaw Control UI connects WebSocket to `wss://{host}/` (root), ignoring the sub-path. Caddy sets a `cfm_bot={name}` cookie when serving the Control UI page. Root WebSocket upgrade requests are matched by a `header_regexp` on the `Cookie` header and routed to the correct bot. The `header_regexp` key must be the header name (e.g., `"Cookie": {"name": "cfm_bot", "pattern": "..."}`) — NOT `{"cfm_bot": {"name": "Cookie", ...}}`.
-
 **Dynamic route sync:** `_sync_caddy_config()` in `app.py` pushes the full JSON config to Caddy's admin API (`POST http://caddy:2019/load`) on every bot lifecycle event (create, delete, start, stop) and on dashboard startup. Uses full-state reconciliation — rebuilds the entire config from current Docker container state. Caddy is connected to each bot's bridge network to reach containers directly.
 
-**Startup migration:** On startup, existing bots' `openclaw.json` is checked and `basePath` is removed if present (Caddy handles sub-path routing externally).
+**Startup migration:** On startup, existing bots' `openclaw.json` is checked and `basePath` is set to `/claw/{name}` if missing.
 
 **TLS modes** (`TLS_MODE` env var):
 
@@ -332,8 +330,4 @@ Frontend uses shadcn/ui components in `frontend/src/components/ui/`. Custom comp
 
 ## TODO
 
-- **Remove cookie-based WebSocket workaround** — OpenClaw PR #30228 (merged) fixes Control UI to include `basePath` in WebSocket URLs. Once a new `ghcr.io/openclaw/openclaw` image ships with this fix, we can remove the `cfm_bot` cookie hack and use native `basePath`-based routing instead. This simplifies the Caddy config significantly. Changes needed:
-  1. Restore `basePath` in `_prepare_openclaw_home()` gateway config
-  2. Remove `set_cookie`, `strip_path_prefix`, and root WebSocket `header_regexp` matcher from `_sync_caddy_config()`
-  3. Flip startup migration in `_lifespan()` from "remove basePath" to "ensure basePath is set"
-  4. Pin `OPENCLAW_IMAGE` to the release that includes the fix
+(none)
