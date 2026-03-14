@@ -1,5 +1,4 @@
 import json
-import os
 
 from templates import _resolve_template, generate_config, list_templates, write_bot_files
 
@@ -132,7 +131,7 @@ class TestListTemplates:
 
 
 class TestTemplateInCreateFlow:
-    def test_generate_config_with_named_template(self, bot_env):
+    def test_generate_config_with_named_template(self, bot_env, monkeypatch):
         # Create a custom template
         custom = bot_env["template_dir"] / "custom"
         custom.mkdir()
@@ -140,12 +139,9 @@ class TestTemplateInCreateFlow:
         (custom / "openclaw.template.json").write_text(json.dumps(custom_tmpl))
         (custom / "SOUL.md").write_text("custom soul")
 
-        os.environ["OPENAI_API_KEY"] = "sk-test"
-        try:
-            config = generate_config("test", template="custom")
-            assert config["models"]["providers"]["openai"]["apiKey"] == "sk-test"
-        finally:
-            del os.environ["OPENAI_API_KEY"]
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        config = generate_config("test", template="custom")
+        assert config["models"]["providers"]["openai"]["apiKey"] == "sk-test"
 
     def test_fallback_to_default_on_missing_template(self, bot_env):
         config = generate_config("test", template="nonexistent")

@@ -120,7 +120,7 @@ class TestFunctionalEndpointsAPI:
             mc = MagicMock()
             mc.status = "running"
             mc.name = f"openclaw-bot-{name}"
-            mc.labels = {"openclaw.name": name, "openclaw.port": "3001"}
+            mc.labels = {"openclaw.bot": "true", "openclaw.name": name, "openclaw.port": "3001"}
             mc.attrs = {"State": {"Health": {"Status": "healthy"}}}
             bots.append(mc)
         self.mock_client.containers.list.return_value = bots

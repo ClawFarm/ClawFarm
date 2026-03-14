@@ -106,20 +106,23 @@ class TestAuthAPI:
         c = self._login_client()
         r = c.delete("/api/auth/users/admin")
         assert r.status_code == 400
+        assert "yourself" in r.json()["detail"].lower()
 
     def test_cannot_delete_last_admin(self):
+        """Another admin cannot delete the sole remaining admin."""
         c = self._login_client()
-        # Create another admin
+        # Create admin2
         c.post("/api/auth/users", json={
             "username": "admin2", "password": "p", "role": "admin", "bots": ["*"],
         })
-        # Login as admin2 and delete admin (OK -- admin2 is still an admin)
+        # admin2 deletes admin — OK, admin2 still exists
         c2 = self._login_client("admin2", "p")
         r = c2.delete("/api/auth/users/admin")
         assert r.status_code == 200
-        # Now try to delete admin2 (the last admin) -- should fail (can't delete self)
-        r2 = c2.delete("/api/auth/users/admin2")
+        # admin2 is now the last admin — cannot demote themselves
+        r2 = c2.put("/api/auth/users/admin2", json={"role": "user"})
         assert r2.status_code == 400
+        assert "last admin" in r2.json()["detail"].lower()
 
     def test_non_admin_cannot_list_users(self):
         c = self._login_client()
