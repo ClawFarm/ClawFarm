@@ -75,7 +75,7 @@ Access: whatever your proxy serves (e.g., `https://claws.example.com`)
 When using `TLS_MODE=off`, your upstream proxy needs to:
 
 1. **Forward traffic** to ClawFarm's host port (default 8443) over plain HTTP
-2. **Support WebSockets** — the bot Control UI requires persistent WebSocket connections
+2. **Support WebSockets** — both the bot Control UI (`/claw/{name}/...`) and the web terminal (`/api/bots/{name}/terminal`) require persistent WebSocket connections
 3. **Pass proxy headers** — `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`
 4. **Not strip paths** — forward the full request path as-is
 5. **Not buffer responses** — bots stream data
@@ -211,14 +211,17 @@ Use `http://<host>:<CADDY_PORT>/api/health` for monitoring.
 
 ## WebSocket Requirements
 
-The bot Control UI uses WebSocket connections for real-time interaction. Your infrastructure must:
+ClawFarm uses WebSocket connections on two path patterns:
 
-- Forward `Connection: Upgrade` and `Upgrade: websocket` headers
+- **Bot Control UI:** `wss://<host>/claw/{name}/...` — real-time chat and agent interaction (basePath-rooted, via OpenClaw)
+- **Web Terminal:** `wss://<host>/api/bots/{name}/terminal` — interactive shell access to bot containers
+
+Your infrastructure must:
+
+- Forward `Connection: Upgrade` and `Upgrade: websocket` headers on both path prefixes (`/claw/` and `/api/`)
 - Not impose short idle timeouts (300s+ recommended)
 - Not buffer WebSocket frames
 - Support long-lived connections (bot sessions can last hours)
-
-WebSocket connections go to the root path (`wss://<host>/`). No special WebSocket-specific routing is needed — just ensure your proxy doesn't strip Upgrade headers.
 
 ## Network Isolation
 
