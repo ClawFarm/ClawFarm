@@ -33,6 +33,7 @@ ClawFarm wraps OpenClaw in operational infrastructure:
 - **Multi-user RBAC** — different users own different agents, with per-agent access control enforced at the reverse proxy layer.
 - **Backup & rollback** — scheduled hourly backups with retention policies and one-click restore per agent.
 - **Zero-config HTTPS** — Caddy handles TLS termination with path-based routing (`/claw/{name}/`) under a single port. Four modes: auto-generated self-signed, Let's Encrypt, custom certs, or plain HTTP behind a proxy.
+- **Web terminal** — interactive shell into any running agent container, directly from the dashboard. No SSH or `docker exec` needed.
 - **Monitoring** — CPU, memory, storage, and token usage per agent from the dashboard.
 - **Templates** — define reusable agent configurations with `{{ENV_VAR}}` substitution. Create new agents in seconds.
 
