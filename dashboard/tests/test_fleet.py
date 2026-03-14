@@ -4,18 +4,14 @@ import tarfile
 import time
 from unittest.mock import MagicMock, patch
 
+import config
 import pytest
-from app import (
-    _IPTABLES_IMAGE,
+from auth import (
     SESSIONS,
-    _apply_network_isolation,
     _bootstrap_admin,
-    _build_iptables_image,
-    _build_tls_config,
     _check_login_rate,
     _cleanup_expired_sessions,
     _create_session,
-    _effective_status,
     _get_session,
     _grant_bot_to_user,
     _hash_password,
@@ -24,33 +20,27 @@ from app import (
     _login_attempts,
     _login_lock,
     _record_failed_login,
-    _redact_config,
-    _remove_network_isolation,
-    _resolve_template,
     _save_users,
-    _sync_caddy_config,
     _user_can_access_bot,
     _verify_password,
+)
+from backup import create_backup, list_backups, prune_scheduled_backups, rollback_to_backup
+from caddy import _build_tls_config, _sync_caddy_config
+from docker_utils import _effective_status
+from isolation import _apply_network_isolation, _build_iptables_image, _remove_network_isolation
+from templates import _resolve_template, generate_config, list_templates, write_bot_files
+from utils import deep_merge, ensure_meta, read_meta, sanitize_name, write_meta
+
+from bots import (
+    _redact_config,
     allocate_port,
-    create_backup,
     create_bot,
-    deep_merge,
     duplicate_bot,
-    ensure_meta,
     fork_bot,
-    generate_config,
     get_bot_cron_jobs,
     get_bot_storage,
     get_bot_token_usage,
     get_fleet_stats,
-    list_backups,
-    list_templates,
-    prune_scheduled_backups,
-    read_meta,
-    rollback_to_backup,
-    sanitize_name,
-    write_bot_files,
-    write_meta,
 )
 
 
@@ -90,8 +80,8 @@ def bot_env(monkeypatch, tmp_path):
     (default_tmpl / "openclaw.template.json").write_text(json.dumps(oc_template))
     (default_tmpl / "SOUL.md").write_text("default soul")
 
-    monkeypatch.setattr("app.TEMPLATE_DIR", template_dir)
-    monkeypatch.setattr("app.BOTS_DIR", bots_dir)
+    monkeypatch.setattr("config.TEMPLATE_DIR", template_dir)
+    monkeypatch.setattr("config.BOTS_DIR", bots_dir)
     monkeypatch.setenv("LLM_BASE_URL", "http://10.0.0.1:8000/v1")
     monkeypatch.setenv("LLM_MODEL", "test-model")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
@@ -215,7 +205,7 @@ class TestPortAllocation:
 
         mock_client = MagicMock()
         mock_client.containers.list.return_value = mock_containers
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         assert allocate_port() == 3003
 
@@ -231,7 +221,7 @@ class TestPortAllocation:
 
         mock_client = MagicMock()
         mock_client.containers.list.return_value = mock_containers
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         with pytest.raises(RuntimeError):
             allocate_port()
@@ -357,7 +347,7 @@ class TestBackup:
         bots_dir = bot_env["bots_dir"]
         ext_dir = bot_env["bots_dir"].parent / "ext_backups"
         ext_dir.mkdir()
-        monkeypatch.setattr("app.BACKUP_DIR", ext_dir)
+        monkeypatch.setattr("config.BACKUP_DIR", ext_dir)
 
         _create_test_bot(bots_dir, "mybot")
         write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
@@ -463,7 +453,7 @@ class TestRollback:
         bots_dir = bot_env["bots_dir"]
         ext_dir = bots_dir.parent / "ext_backups"
         ext_dir.mkdir()
-        monkeypatch.setattr("app.BACKUP_DIR", ext_dir)
+        monkeypatch.setattr("config.BACKUP_DIR", ext_dir)
 
         _create_test_bot(bots_dir, "mybot", config={"version": "v1"}, soul="soul v1")
         write_meta("mybot", {"created_at": "x", "modified_at": "x", "forked_from": None, "backups": []})
@@ -489,7 +479,7 @@ class TestDuplicate:
         """Mock _launch_container to avoid Docker."""
         def fake_launch(name, bot_dir, **kwargs):
             return {"name": name, "status": "created", "port": 3001, "container_name": f"openclaw-bot-{name}"}
-        monkeypatch.setattr("app._launch_container", fake_launch)
+        monkeypatch.setattr("bots._launch_container", fake_launch)
 
     def test_duplicate_copies_actual_config(self, bot_env, monkeypatch):
         self._mock_launch(monkeypatch)
@@ -545,7 +535,7 @@ class TestFork:
     def _mock_launch(self, monkeypatch):
         def fake_launch(name, bot_dir, **kwargs):
             return {"name": name, "status": "created", "port": 3001, "container_name": f"openclaw-bot-{name}"}
-        monkeypatch.setattr("app._launch_container", fake_launch)
+        monkeypatch.setattr("bots._launch_container", fake_launch)
 
     def test_fork_copies_config_and_soul(self, bot_env, monkeypatch):
         self._mock_launch(monkeypatch)
@@ -746,7 +736,7 @@ class TestWorkspaceCopy:
     def _mock_launch(self, monkeypatch):
         def fake_launch(name, bot_dir, **kwargs):
             return {"name": name, "status": "created", "port": 3001, "container_name": f"openclaw-bot-{name}"}
-        monkeypatch.setattr("app._launch_container", fake_launch)
+        monkeypatch.setattr("bots._launch_container", fake_launch)
 
     def test_duplicate_copies_workspace(self, bot_env, monkeypatch):
         self._mock_launch(monkeypatch)
@@ -931,7 +921,7 @@ class TestFleetStats:
         ]
         mock_client = MagicMock()
         mock_client.containers.list.return_value = containers
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         result = get_fleet_stats()
         assert result["total_bots"] == 2
@@ -955,7 +945,7 @@ class TestFleetStats:
         ]
         mock_client = MagicMock()
         mock_client.containers.list.return_value = containers
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         result = get_fleet_stats()
         assert result["total_bots"] == 2
@@ -967,7 +957,7 @@ class TestFleetStats:
     def test_fleet_stats_empty_fleet(self, bot_env, monkeypatch):
         mock_client = MagicMock()
         mock_client.containers.list.return_value = []
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         result = get_fleet_stats()
         assert result["total_bots"] == 0
@@ -989,7 +979,7 @@ class TestFleetStats:
         ]
         mock_client = MagicMock()
         mock_client.containers.list.return_value = containers
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         result = get_fleet_stats(allowed_bots={"bot-a"})
         assert result["total_bots"] == 1
@@ -1007,7 +997,7 @@ class TestFleetStats:
         ]
         mock_client = MagicMock()
         mock_client.containers.list.return_value = containers
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         result = get_fleet_stats(allowed_bots=None)
         assert result["total_bots"] == 2
@@ -1036,7 +1026,7 @@ class TestFleetStats:
         ]
         mock_client = MagicMock()
         mock_client.containers.list.return_value = containers
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         result = get_fleet_stats()
         assert result["tokens_by_model"]["claude-sonnet-4-6"] == 1500
@@ -1159,11 +1149,11 @@ def auth_env(monkeypatch, tmp_path):
     bots_dir = tmp_path / "bots"
     bots_dir.mkdir(exist_ok=True)
     users_file = bots_dir / ".users.json"
-    monkeypatch.setattr("app.BOTS_DIR", bots_dir)
+    monkeypatch.setattr("config.BOTS_DIR", bots_dir)
     monkeypatch.setenv("USERS_FILE", str(users_file))
-    monkeypatch.setattr("app.AUTH_DISABLED", False)
-    monkeypatch.setattr("app.SESSION_TTL", 3600)
-    monkeypatch.setattr("app.ADMIN_USER", "admin")
+    monkeypatch.setattr("config.AUTH_DISABLED", False)
+    monkeypatch.setattr("config.SESSION_TTL", 3600)
+    monkeypatch.setattr("config.ADMIN_USER", "admin")
     SESSIONS.clear()
     with _login_lock:
         _login_attempts.clear()
@@ -1211,7 +1201,7 @@ class TestSessionLifecycle:
         assert _get_session("bogus-token") is None
 
     def test_expired_session_returns_none(self, auth_env, monkeypatch):
-        monkeypatch.setattr("app.SESSION_TTL", 1)
+        monkeypatch.setattr("config.SESSION_TTL", 1)
         self._make_user(auth_env, "alice")
         token = _create_session("alice")
         time.sleep(1.1)
@@ -1227,7 +1217,7 @@ class TestSessionLifecycle:
         assert _get_session(token) is None
 
     def test_cleanup_expired_sessions(self, auth_env, monkeypatch):
-        monkeypatch.setattr("app.SESSION_TTL", 1)
+        monkeypatch.setattr("config.SESSION_TTL", 1)
         self._make_user(auth_env, "alice")
         _create_session("alice")
         _create_session("alice")
@@ -1637,7 +1627,7 @@ class TestWebSocketTerminal:
 
         self.docker = _docker
         self.mock_client = MagicMock()
-        monkeypatch.setattr("app._get_client", lambda: self.mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)
         monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
         _bootstrap_admin()
         self.app = _app
@@ -1696,7 +1686,7 @@ class TestWebSocketTerminal:
 
     def test_auth_disabled_accepts(self, monkeypatch):
         """AUTH_DISABLED=True → accepts connection, but container not found → error JSON."""
-        monkeypatch.setattr(self.app, "AUTH_DISABLED", True)
+        monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client.containers.get.side_effect = self.docker.errors.NotFound("nope")
         with self.client.websocket_connect("/api/bots/mybot/terminal") as ws:
             msg = ws.receive_json()
@@ -1764,7 +1754,7 @@ class TestCreateBotNameCollision:
         bots_dir = bot_env["bots_dir"]
         # Create a bot directory to simulate existing bot
         (bots_dir / "existing-bot").mkdir()
-        monkeypatch.setattr("app._get_client", lambda: MagicMock())
+        monkeypatch.setattr("docker_utils._get_client", lambda: MagicMock())
         with pytest.raises(ValueError, match="already exists"):
             create_bot("existing-bot")
 
@@ -1925,8 +1915,7 @@ class TestBuildTlsConfig:
 
     def test_internal_mode_default(self, monkeypatch):
         """Internal mode (default): Caddy auto-generates self-signed cert."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
         policies, tls_app, scheme = _build_tls_config()
         assert policies == [{}]  # empty policy activates TLS on listener
         assert scheme == "https"
@@ -1937,8 +1926,7 @@ class TestBuildTlsConfig:
 
     def test_custom_mode(self, monkeypatch):
         """Custom mode: load user-provided cert files."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "custom")
+        monkeypatch.setattr(config, "TLS_MODE", "custom")
         policies, tls_app, scheme = _build_tls_config()
         assert len(policies) == 1
         assert policies[0]["certificate_selection"]["any_tag"] == ["cert0"]
@@ -1950,8 +1938,7 @@ class TestBuildTlsConfig:
 
     def test_off_mode(self, monkeypatch):
         """Off mode: no TLS, plain HTTP."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "off")
+        monkeypatch.setattr(config, "TLS_MODE", "off")
         policies, tls_app, scheme = _build_tls_config()
         assert policies == []
         assert tls_app == {}
@@ -1959,9 +1946,8 @@ class TestBuildTlsConfig:
 
     def test_acme_mode_with_domain(self, monkeypatch):
         """ACME mode: Let's Encrypt with domain."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "acme")
-        monkeypatch.setattr(app, "DOMAIN", "farm.example.com")
+        monkeypatch.setattr(config, "TLS_MODE", "acme")
+        monkeypatch.setattr(config, "DOMAIN", "farm.example.com")
         monkeypatch.setenv("ACME_EMAIL", "admin@example.com")
         policies, tls_app, scheme = _build_tls_config()
         assert policies == [{}]  # empty policy activates TLS on listener
@@ -1973,9 +1959,8 @@ class TestBuildTlsConfig:
 
     def test_acme_mode_without_email(self, monkeypatch):
         """ACME mode without email: no email in issuer config."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "acme")
-        monkeypatch.setattr(app, "DOMAIN", "farm.example.com")
+        monkeypatch.setattr(config, "TLS_MODE", "acme")
+        monkeypatch.setattr(config, "DOMAIN", "farm.example.com")
         monkeypatch.delenv("ACME_EMAIL", raising=False)
         policies, tls_app, scheme = _build_tls_config()
         issuer = tls_app["automation"]["policies"][0]["issuers"][0]
@@ -1983,9 +1968,8 @@ class TestBuildTlsConfig:
 
     def test_acme_mode_without_domain(self, monkeypatch):
         """ACME mode without domain: no subjects in policy."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "acme")
-        monkeypatch.setattr(app, "DOMAIN", "")
+        monkeypatch.setattr(config, "TLS_MODE", "acme")
+        monkeypatch.setattr(config, "DOMAIN", "")
         monkeypatch.delenv("ACME_EMAIL", raising=False)
         policies, tls_app, scheme = _build_tls_config()
         policy = tls_app["automation"]["policies"][0]
@@ -1993,8 +1977,7 @@ class TestBuildTlsConfig:
 
     def test_unknown_mode_defaults_to_internal(self, monkeypatch):
         """Unknown TLS_MODE values fall back to internal."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "bogus")
+        monkeypatch.setattr(config, "TLS_MODE", "bogus")
         policies, tls_app, scheme = _build_tls_config()
         assert scheme == "https"
         policy = tls_app["automation"]["policies"][0]
@@ -2018,13 +2001,11 @@ class TestSyncCaddyConfig:
         - mock_client: the mocked Docker client
         - add_bot(name): helper to add a running bot container to the mock
         """
-        import app
-
         # Mock Docker client with empty container list by default
         mock_client = MagicMock()
         containers = []
         mock_client.containers.list.return_value = containers
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
 
         # Capture what gets POSTed to Caddy admin API
         # _sync_caddy_config does `import requests as _req` internally,
@@ -2042,9 +2023,9 @@ class TestSyncCaddyConfig:
         monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
 
         # Defaults
-        monkeypatch.setattr(app, "CADDY_ADMIN_URL", "http://caddy:2019")
-        monkeypatch.setattr(app, "AUTH_DISABLED", False)
-        monkeypatch.setattr(app, "PORTAL_URL", "")
+        monkeypatch.setattr(config, "CADDY_ADMIN_URL", "http://caddy:2019")
+        monkeypatch.setattr(config, "AUTH_DISABLED", False)
+        monkeypatch.setattr(config, "PORTAL_URL", "")
 
         def add_bot(name):
             bot = MagicMock()
@@ -2055,24 +2036,23 @@ class TestSyncCaddyConfig:
 
     def test_internal_mode_no_bots(self, monkeypatch, caddy_env):
         """Internal mode with no bots: self-signed TLS + redirect server."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
         assert len(caddy_env["captured"]) == 1
-        config = caddy_env["captured"][0]
+        caddy_cfg = caddy_env["captured"][0]
 
         # Admin API
-        assert config["admin"]["listen"] == ":2019"
+        assert caddy_cfg["admin"]["listen"] == ":2019"
 
         # Main server listens on fixed internal port
-        main = config["apps"]["http"]["servers"]["main"]
+        main = caddy_cfg["apps"]["http"]["servers"]["main"]
         assert main["listen"] == [":8080"]
 
         # TLS app: internal issuer with on_demand
-        tls_app = config["apps"]["tls"]
+        tls_app = caddy_cfg["apps"]["tls"]
         policy = tls_app["automation"]["policies"][0]
         assert policy["issuers"][0]["module"] == "internal"
         assert policy["on_demand"] is True
@@ -2081,7 +2061,7 @@ class TestSyncCaddyConfig:
         assert main["tls_connection_policies"] == [{}]
 
         # Redirect server exists (HTTP→HTTPS)
-        redirect = config["apps"]["http"]["servers"]["redirect"]
+        redirect = caddy_cfg["apps"]["http"]["servers"]["redirect"]
         assert redirect["listen"] == [":80"]
         redir_loc = redirect["routes"][0]["handle"][0]["headers"]["Location"][0]
         assert "https://" in redir_loc
@@ -2089,17 +2069,16 @@ class TestSyncCaddyConfig:
 
     def test_internal_mode_with_bots(self, monkeypatch, caddy_env):
         """Internal mode with bots: bot routes inserted before catch-all."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         caddy_env["add_bot"]("alice")
         caddy_env["add_bot"]("bob")
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        main = config["apps"]["http"]["servers"]["main"]
+        caddy_cfg = caddy_env["captured"][0]
+        main = caddy_cfg["apps"]["http"]["servers"]["main"]
         routes = main["routes"]
 
         # Find bot routes by matching path patterns
@@ -2133,21 +2112,20 @@ class TestSyncCaddyConfig:
 
     def test_off_mode_no_redirect_server(self, monkeypatch, caddy_env):
         """Off mode: plain HTTP, no TLS app, no redirect server."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "off")
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "off")
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        servers = config["apps"]["http"]["servers"]
+        caddy_cfg = caddy_env["captured"][0]
+        servers = caddy_cfg["apps"]["http"]["servers"]
 
         # Only "main" server, no "redirect"
         assert "redirect" not in servers
         assert "main" in servers
 
         # No TLS app
-        assert "tls" not in config["apps"]
+        assert "tls" not in caddy_cfg["apps"]
 
         # Main server on fixed internal port (independent of CADDY_PORT)
         assert servers["main"]["listen"] == [":8080"]
@@ -2160,66 +2138,63 @@ class TestSyncCaddyConfig:
 
     def test_custom_mode_tls_policies(self, monkeypatch, caddy_env):
         """Custom mode: cert file references in TLS config."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "custom")
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "custom")
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        main = config["apps"]["http"]["servers"]["main"]
+        caddy_cfg = caddy_env["captured"][0]
+        main = caddy_cfg["apps"]["http"]["servers"]["main"]
 
         # tls_connection_policies with cert tag
         assert "tls_connection_policies" in main
         assert main["tls_connection_policies"][0]["certificate_selection"]["any_tag"] == ["cert0"]
 
         # TLS app with load_files
-        tls_app = config["apps"]["tls"]
+        tls_app = caddy_cfg["apps"]["tls"]
         load = tls_app["certificates"]["load_files"][0]
         assert load["certificate"] == "/certs/cert.pem"
         assert load["key"] == "/certs/key.pem"
 
         # Redirect server exists
-        assert "redirect" in config["apps"]["http"]["servers"]
+        assert "redirect" in caddy_cfg["apps"]["http"]["servers"]
 
     def test_acme_mode_full_config(self, monkeypatch, caddy_env):
         """ACME mode: Let's Encrypt automation policy + domain subjects."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "acme")
-        monkeypatch.setattr(app, "DOMAIN", "farm.example.com")
+        monkeypatch.setattr(config, "TLS_MODE", "acme")
+        monkeypatch.setattr(config, "DOMAIN", "farm.example.com")
         monkeypatch.setenv("ACME_EMAIL", "admin@example.com")
-        monkeypatch.setattr(app, "CADDY_PORT", 443)
+        monkeypatch.setattr(config, "CADDY_PORT", 443)
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
+        caddy_cfg = caddy_env["captured"][0]
 
         # TLS app has ACME automation
-        tls_app = config["apps"]["tls"]
+        tls_app = caddy_cfg["apps"]["tls"]
         policy = tls_app["automation"]["policies"][0]
         assert policy["issuers"][0]["module"] == "acme"
         assert policy["issuers"][0]["email"] == "admin@example.com"
         assert policy["subjects"] == ["farm.example.com"]
 
         # Main server on fixed internal port (CADDY_PORT=443 is external only)
-        assert config["apps"]["http"]["servers"]["main"]["listen"] == [":8080"]
+        assert caddy_cfg["apps"]["http"]["servers"]["main"]["listen"] == [":8080"]
 
         # Redirect server (HTTPS enabled)
-        assert "redirect" in config["apps"]["http"]["servers"]
+        assert "redirect" in caddy_cfg["apps"]["http"]["servers"]
 
     def test_auth_disabled_no_forward_auth(self, monkeypatch, caddy_env):
         """When AUTH_DISABLED, routes should NOT have forward_auth handlers."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "AUTH_DISABLED", True)
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "AUTH_DISABLED", True)
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         caddy_env["add_bot"]("testbot")
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        caddy_cfg = caddy_env["captured"][0]
+        routes = caddy_cfg["apps"]["http"]["servers"]["main"]["routes"]
 
         # Auth disabled: simpler route structure (no forward_auth subrequests)
         # API route should be direct reverse_proxy, no auth check
@@ -2246,17 +2221,16 @@ class TestSyncCaddyConfig:
 
     def test_bot_route_path_only_matching(self, monkeypatch, caddy_env):
         """Bot routes use path-only matching (basePath handles WebSocket natively)."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "AUTH_DISABLED", True)  # simpler to inspect
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "AUTH_DISABLED", True)  # simpler to inspect
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         caddy_env["add_bot"]("mybot")
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        caddy_cfg = caddy_env["captured"][0]
+        routes = caddy_cfg["apps"]["http"]["servers"]["main"]["routes"]
 
         bot_routes = [r for r in routes if any(
             "/claw/mybot" in p
@@ -2274,34 +2248,32 @@ class TestSyncCaddyConfig:
 
     def test_portal_url_in_redirect(self, monkeypatch, caddy_env):
         """When PORTAL_URL is set, redirect and login URLs use it."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "PORTAL_URL", "https://farm.example.com")
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "PORTAL_URL", "https://farm.example.com")
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
+        caddy_cfg = caddy_env["captured"][0]
 
         # Redirect server uses PORTAL_URL
-        redirect = config["apps"]["http"]["servers"]["redirect"]
+        redirect = caddy_cfg["apps"]["http"]["servers"]["redirect"]
         redir_loc = redirect["routes"][0]["handle"][0]["headers"]["Location"][0]
         # PORTAL_URL is used directly (already includes port if needed)
         assert redir_loc.startswith("https://farm.example.com")
 
     def test_caddy_unreachable_fails_silently(self, monkeypatch):
         """When Caddy admin API is unreachable, _sync_caddy_config doesn't raise."""
-        import app
         import requests as _real_req
 
         mock_client = MagicMock()
         mock_client.containers.list.return_value = []
-        monkeypatch.setattr("app._get_client", lambda: mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: mock_client)
         monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "AUTH_DISABLED", False)
-        monkeypatch.setattr(app, "PORTAL_URL", "")
-        monkeypatch.setattr(app, "CADDY_ADMIN_URL", "http://localhost:99999")
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "AUTH_DISABLED", False)
+        monkeypatch.setattr(config, "PORTAL_URL", "")
+        monkeypatch.setattr(config, "CADDY_ADMIN_URL", "http://localhost:99999")
 
         # Mock requests.post to raise ConnectionError
         def _failing_post(*args, **kwargs):
@@ -2313,14 +2285,13 @@ class TestSyncCaddyConfig:
 
     def test_security_headers_present(self, monkeypatch, caddy_env):
         """First route is a matchless security headers route with correct headers."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        caddy_cfg = caddy_env["captured"][0]
+        routes = caddy_cfg["apps"]["http"]["servers"]["main"]["routes"]
         first = routes[0]
 
         # No matcher — applies to all requests (non-terminal middleware)
@@ -2339,14 +2310,13 @@ class TestSyncCaddyConfig:
 
     def test_security_headers_no_hsts_when_tls_off(self, monkeypatch, caddy_env):
         """No HSTS header when TLS_MODE=off."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "off")
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "off")
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        caddy_cfg = caddy_env["captured"][0]
+        routes = caddy_cfg["apps"]["http"]["servers"]["main"]["routes"]
         first = routes[0]
         hdr = first["handle"][0]["response"]["set"]
         assert "Strict-Transport-Security" not in hdr
@@ -2355,17 +2325,16 @@ class TestSyncCaddyConfig:
 
     def test_x_frame_options_sameorigin_global(self, monkeypatch, caddy_env):
         """X-Frame-Options is SAMEORIGIN globally (allows bot Control UI iframes)."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "AUTH_DISABLED", True)
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "AUTH_DISABLED", True)
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         caddy_env["add_bot"]("testbot")
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        caddy_cfg = caddy_env["captured"][0]
+        routes = caddy_cfg["apps"]["http"]["servers"]["main"]["routes"]
         first = routes[0]
 
         # Global security headers use SAMEORIGIN (not DENY) because the
@@ -2376,14 +2345,13 @@ class TestSyncCaddyConfig:
 
     def test_health_in_public_routes(self, monkeypatch, caddy_env):
         """Health endpoint is in the public (unauthenticated) routes."""
-        import app
-        monkeypatch.setattr(app, "TLS_MODE", "internal")
-        monkeypatch.setattr(app, "CADDY_PORT", 8443)
+        monkeypatch.setattr(config, "TLS_MODE", "internal")
+        monkeypatch.setattr(config, "CADDY_PORT", 8443)
 
         _sync_caddy_config()
 
-        config = caddy_env["captured"][0]
-        routes = config["apps"]["http"]["servers"]["main"]["routes"]
+        caddy_cfg = caddy_env["captured"][0]
+        routes = caddy_cfg["apps"]["http"]["servers"]["main"]["routes"]
 
         # Find the public auth routes (match includes /api/auth/login)
         public_routes = [r for r in routes if any(
@@ -2435,37 +2403,33 @@ class TestSessionCookieSecureFlag:
 
     def test_compose_tls_on_sets_secure(self):
         """Compose mode + TLS enabled → Secure flag set."""
-        import app
         self.monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
-        self.monkeypatch.setattr(app, "TLS_MODE", "internal")
-        self.monkeypatch.setattr(app, "PORTAL_URL", "")
+        self.monkeypatch.setattr(config, "TLS_MODE", "internal")
+        self.monkeypatch.setattr(config, "PORTAL_URL", "")
         cookie = self._login_and_get_cookie_header()
         assert "secure" in cookie.lower()
 
     def test_compose_tls_off_with_https_portal_sets_secure(self):
         """Compose mode + TLS off + PORTAL_URL=https → Secure flag set."""
-        import app
         self.monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
-        self.monkeypatch.setattr(app, "TLS_MODE", "off")
-        self.monkeypatch.setattr(app, "PORTAL_URL", "https://farm.example.com")
+        self.monkeypatch.setattr(config, "TLS_MODE", "off")
+        self.monkeypatch.setattr(config, "PORTAL_URL", "https://farm.example.com")
         cookie = self._login_and_get_cookie_header()
         assert "secure" in cookie.lower()
 
     def test_compose_tls_off_without_https_portal_no_secure(self):
         """Compose mode + TLS off + no HTTPS PORTAL_URL → no Secure flag."""
-        import app
         self.monkeypatch.setenv("HOST_BOTS_DIR", "/host/bots")
-        self.monkeypatch.setattr(app, "TLS_MODE", "off")
-        self.monkeypatch.setattr(app, "PORTAL_URL", "")
+        self.monkeypatch.setattr(config, "TLS_MODE", "off")
+        self.monkeypatch.setattr(config, "PORTAL_URL", "")
         cookie = self._login_and_get_cookie_header()
         assert "secure" not in cookie.lower()
 
     def test_dev_mode_no_secure(self):
         """Dev mode (no HOST_BOTS_DIR) → no Secure flag regardless of TLS mode."""
-        import app
         self.monkeypatch.delenv("HOST_BOTS_DIR", raising=False)
-        self.monkeypatch.setattr(app, "TLS_MODE", "internal")
-        self.monkeypatch.setattr(app, "PORTAL_URL", "")
+        self.monkeypatch.setattr(config, "TLS_MODE", "internal")
+        self.monkeypatch.setattr(config, "PORTAL_URL", "")
         cookie = self._login_and_get_cookie_header()
         assert "secure" not in cookie.lower()
 
@@ -2481,11 +2445,11 @@ class TestBotLifecycleAPI:
         import app as _app
         import docker as _docker
         from fastapi.testclient import TestClient
-        monkeypatch.setattr(_app, "AUTH_DISABLED", True)
+        monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client = MagicMock()
-        monkeypatch.setattr("app._get_client", lambda: self.mock_client)
-        monkeypatch.setattr("app._sync_caddy_config_async", lambda: None)
-        monkeypatch.setattr("app._sync_caddy_config", lambda: None)
+        monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)
+        monkeypatch.setattr("caddy._sync_caddy_config_async", lambda: None)
+        monkeypatch.setattr("caddy._sync_caddy_config", lambda: None)
         self.client = TestClient(_app.app)
         self.bot_env = bot_env
         self.docker = _docker
@@ -2584,9 +2548,9 @@ class TestFilesystemReadAPI:
         import app as _app
         import docker as _docker
         from fastapi.testclient import TestClient
-        monkeypatch.setattr(_app, "AUTH_DISABLED", True)
+        monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client = MagicMock()
-        monkeypatch.setattr("app._get_client", lambda: self.mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)
         self.client = TestClient(_app.app)
         self.bot_env = bot_env
         self.docker = _docker
@@ -2684,18 +2648,18 @@ class TestCRUDEndpointsAPI:
         import app as _app
         import docker as _docker
         from fastapi.testclient import TestClient
-        monkeypatch.setattr(_app, "AUTH_DISABLED", True)
+        monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client = MagicMock()
-        monkeypatch.setattr("app._get_client", lambda: self.mock_client)
-        monkeypatch.setattr("app._sync_caddy_config_async", lambda: None)
-        monkeypatch.setattr("app._sync_caddy_config", lambda: None)
+        monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)
+        monkeypatch.setattr("caddy._sync_caddy_config_async", lambda: None)
+        monkeypatch.setattr("caddy._sync_caddy_config", lambda: None)
         # Mock _launch_container to avoid real Docker calls
         self._launched = []
 
         def fake_launch(name, bot_dir, **kwargs):
             self._launched.append(name)
             return {"name": name, "status": "running", "port": 3001}
-        monkeypatch.setattr("app._launch_container", fake_launch)
+        monkeypatch.setattr("bots._launch_container", fake_launch)
         self.client = TestClient(_app.app)
         self.bot_env = bot_env
         self.docker = _docker
@@ -2835,19 +2799,18 @@ class TestFunctionalEndpointsAPI:
     def setup(self, bot_env, auth_env, monkeypatch):
         import app as _app
         from fastapi.testclient import TestClient
-        monkeypatch.setattr(_app, "AUTH_DISABLED", True)
+        monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client = MagicMock()
-        monkeypatch.setattr("app._get_client", lambda: self.mock_client)
+        monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)
         self.client = TestClient(_app.app)
         self.bot_env = bot_env
         self._app = _app
         self.monkeypatch = monkeypatch
 
     def test_config_returns_settings(self):
-        import app
-        self.monkeypatch.setattr(app, "PORTAL_URL", "https://farm.example.com")
-        self.monkeypatch.setattr(app, "CADDY_PORT", 8443)
-        self.monkeypatch.setattr(app, "TLS_MODE", "internal")
+        self.monkeypatch.setattr(config, "PORTAL_URL", "https://farm.example.com")
+        self.monkeypatch.setattr(config, "CADDY_PORT", 8443)
+        self.monkeypatch.setattr(config, "TLS_MODE", "internal")
         r = self.client.get("/api/config")
         assert r.status_code == 200
         data = r.json()
@@ -2856,8 +2819,7 @@ class TestFunctionalEndpointsAPI:
         assert data["tls_mode"] == "internal"
 
     def test_config_null_portal(self):
-        import app
-        self.monkeypatch.setattr(app, "PORTAL_URL", "")
+        self.monkeypatch.setattr(config, "PORTAL_URL", "")
         r = self.client.get("/api/config")
         assert r.status_code == 200
         assert r.json()["portal_url"] is None
@@ -2927,10 +2889,9 @@ class TestFunctionalEndpointsAPI:
 
     def test_list_bots_rbac_filtering(self):
         """Non-admin users only see bots they have access to."""
-        import app
-        self.monkeypatch.setattr(app, "AUTH_DISABLED", False)
+        self.monkeypatch.setattr(config, "AUTH_DISABLED", False)
         # Set up auth with a limited user
-        from app import _bootstrap_admin, _hash_password, _load_users, _save_users
+        from auth import _bootstrap_admin, _hash_password, _load_users, _save_users
         self.monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
         _bootstrap_admin()
         users = _load_users()
@@ -2956,9 +2917,8 @@ class TestFunctionalEndpointsAPI:
 
     def test_fleet_stats_rbac_filtering(self):
         """Non-admin users only see fleet stats for their bots."""
-        import app
-        self.monkeypatch.setattr(app, "AUTH_DISABLED", False)
-        from app import _bootstrap_admin, _hash_password, _load_users, _save_users
+        self.monkeypatch.setattr(config, "AUTH_DISABLED", False)
+        from auth import _bootstrap_admin, _hash_password, _load_users, _save_users
         self.monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
         _bootstrap_admin()
         users = _load_users()
@@ -3010,7 +2970,7 @@ class TestNetworkIsolation:
 
         mock_client.containers.run.assert_called_once()
         call_args = mock_client.containers.run.call_args
-        assert call_args[0][0] == _IPTABLES_IMAGE
+        assert call_args[0][0] == config._IPTABLES_IMAGE
         script = call_args[1]["command"][2]  # ["sh", "-c", script]
         assert "CF-test" in script
         assert "br-abcdef123456" in script
@@ -3134,4 +3094,4 @@ class TestNetworkIsolation:
         _build_iptables_image(mock_client)
         mock_client.images.build.assert_called_once()
         call_kwargs = mock_client.images.build.call_args[1]
-        assert call_kwargs["tag"] == _IPTABLES_IMAGE
+        assert call_kwargs["tag"] == config._IPTABLES_IMAGE
