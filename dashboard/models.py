@@ -41,6 +41,11 @@ class UpdateUserRequest(BaseModel):
     bots: list[str] | None = None
 
 
+class CloneRequest(BaseModel):
+    new_name: str
+    track_fork: bool = False
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
