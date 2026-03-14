@@ -273,6 +273,7 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 | `frontend/src/app/bots/[name]/page.tsx` | Bot detail page |
 | `frontend/src/app/login/page.tsx` | Login page |
 | `frontend/src/app/users/page.tsx` | Admin user management page |
+| `frontend/src/components/terminal-dialog.tsx` | xterm.js web terminal (WebSocket → Docker exec PTY) |
 | `frontend/src/hooks/use-auth.ts` | SWR hook for auth state |
 | `frontend/next.config.ts` | API proxy rewrite rules |
 | `bot-template/default/openclaw.template.json` | Default OpenClaw config template with `{{ENV_VAR}}` placeholders |
