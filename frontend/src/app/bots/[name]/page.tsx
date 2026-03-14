@@ -13,6 +13,7 @@ import { BackupHistory } from "@/components/backup-history";
 import { ConfigViewer } from "@/components/config-viewer";
 import { SoulViewer } from "@/components/soul-viewer";
 import { LogsDialog } from "@/components/logs-dialog";
+import { TerminalDialog } from "@/components/terminal-dialog";
 import { NamePromptDialog } from "@/components/name-prompt-dialog";
 import { useBotDetail } from "@/hooks/use-bot-detail";
 import { useConfig } from "@/hooks/use-config";
@@ -143,6 +144,9 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
                   </>
                 )}
                 <LogsDialog botName={detail.name} />
+                {(detail.status === "running" || detail.status === "unhealthy") && (
+                  <TerminalDialog botName={detail.name} />
+                )}
                 <NamePromptDialog
                   label="Duplicate"
                   title={`Duplicate "${detail.name}"`}

@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import copy
 import io
 import json
@@ -19,7 +21,7 @@ from typing import Literal
 import bcrypt
 import docker
 from dotenv import load_dotenv
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -2584,3 +2586,102 @@ async def api_approve_devices(name: str, ctx: dict = Depends(_require_bot_access
                 approved.append(req_id)
 
     return {"approved": len(approved), "request_ids": approved}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket terminal
+# ---------------------------------------------------------------------------
+@app.websocket("/api/bots/{name}/terminal")
+async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None = Cookie(None)):
+    """Interactive terminal into a running bot container via Docker exec."""
+    # Auth (WebSocket can't use Depends)
+    if AUTH_DISABLED:
+        session = {"username": "dev", "role": "admin", "bots": ["*"]}
+    else:
+        session = _get_session(cfm_session) if cfm_session else None
+        if not session:
+            await websocket.close(code=4401, reason="Not authenticated")
+            return
+    sname = sanitize_name(name)
+    if not _user_can_access_bot(session, sname):
+        await websocket.close(code=4403, reason="Access denied")
+        return
+
+    await websocket.accept()
+
+    # Container lookup
+    client = _get_client()
+    container_name = f"openclaw-bot-{sname}"
+    try:
+        container = client.containers.get(container_name)
+        if container.status != "running":
+            await websocket.send_json({"type": "error", "message": "Container is not running"})
+            await websocket.close()
+            return
+    except docker.errors.NotFound:
+        await websocket.send_json({"type": "error", "message": "Container not found"})
+        await websocket.close()
+        return
+
+    # Create exec with PTY
+    api_client = client.api
+    exec_id = api_client.exec_create(
+        container_name, "/bin/bash",
+        stdin=True, stdout=True, stderr=True, tty=True,
+        user="node", workdir="/home/node",
+    )["Id"]
+    sock = api_client.exec_start(exec_id, tty=True, socket=True, demux=False)
+    # sock._sock is the raw socket for bidirectional I/O
+
+    loop = asyncio.get_event_loop()
+    closed = asyncio.Event()
+
+    async def _read_from_container():
+        """Read PTY output and forward to WebSocket as base64."""
+        try:
+            while not closed.is_set():
+                data = await loop.run_in_executor(None, lambda: sock._sock.recv(4096))
+                if not data:
+                    break
+                await websocket.send_json({
+                    "type": "data",
+                    "data": base64.b64encode(data).decode("ascii"),
+                })
+        except Exception:
+            pass
+        finally:
+            closed.set()
+
+    async def _read_from_websocket():
+        """Read WebSocket messages and forward to PTY / handle resize."""
+        try:
+            while not closed.is_set():
+                msg = await websocket.receive_json()
+                if msg.get("type") == "data":
+                    raw = base64.b64decode(msg["data"])
+                    await loop.run_in_executor(None, lambda r=raw: sock._sock.sendall(r))
+                elif msg.get("type") == "resize":
+                    cols = msg.get("cols", 80)
+                    rows = msg.get("rows", 24)
+                    try:
+                        api_client.exec_resize(exec_id, height=rows, width=cols)
+                    except Exception:
+                        pass
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        except Exception:
+            pass
+        finally:
+            closed.set()
+
+    try:
+        await asyncio.gather(_read_from_container(), _read_from_websocket())
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
