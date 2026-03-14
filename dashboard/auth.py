@@ -6,8 +6,9 @@ import threading
 import time
 
 import bcrypt
-import config
 from fastapi import Cookie, Depends, HTTPException
+
+import config
 from utils import sanitize_name
 
 # ---------------------------------------------------------------------------

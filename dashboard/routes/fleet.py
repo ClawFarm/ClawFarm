@@ -1,9 +1,9 @@
+from fastapi import APIRouter, Depends, HTTPException
+
 import config
 from auth import _require_session
-from fastapi import APIRouter, Depends, HTTPException
-from templates import list_templates
-
 from bots import get_fleet_stats
+from templates import list_templates
 
 router = APIRouter()
 

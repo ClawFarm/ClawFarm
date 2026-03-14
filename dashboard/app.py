@@ -3,12 +3,13 @@ import os
 import threading
 from contextlib import asynccontextmanager
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 import config
 import docker_utils
 from auth import _bootstrap_admin
 from caddy import _connect_caddy_to_network, _sync_caddy_config
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from isolation import _apply_network_isolation, _build_iptables_image
 from routes import all_routers
 from scheduler import _backup_scheduler, _backup_stop_event, _housekeeping_scheduler, _housekeeping_stop_event

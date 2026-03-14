@@ -1,10 +1,11 @@
 import asyncio
 import base64
 
+from fastapi import APIRouter, Cookie, WebSocket, WebSocketDisconnect
+
 import config
 import docker_utils
 from auth import _get_session, _user_can_access_bot
-from fastapi import APIRouter, Cookie, WebSocket, WebSocketDisconnect
 from utils import sanitize_name
 
 router = APIRouter()

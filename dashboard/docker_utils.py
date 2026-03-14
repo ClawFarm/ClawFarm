@@ -1,8 +1,9 @@
 import os
 from pathlib import Path
 
-import config
 import docker
+
+import config
 
 # ---------------------------------------------------------------------------
 # Lazy Docker client

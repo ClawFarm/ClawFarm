@@ -4,8 +4,9 @@ import tarfile
 import time
 from unittest.mock import MagicMock, patch
 
-import config
 import pytest
+
+import config
 from auth import (
     SESSIONS,
     _bootstrap_admin,
@@ -25,12 +26,6 @@ from auth import (
     _verify_password,
 )
 from backup import create_backup, list_backups, prune_scheduled_backups, rollback_to_backup
-from caddy import _build_tls_config, _sync_caddy_config
-from docker_utils import _effective_status
-from isolation import _apply_network_isolation, _build_iptables_image, _remove_network_isolation
-from templates import _resolve_template, generate_config, list_templates, write_bot_files
-from utils import deep_merge, ensure_meta, read_meta, sanitize_name, write_meta
-
 from bots import (
     _redact_config,
     allocate_port,
@@ -42,6 +37,11 @@ from bots import (
     get_bot_token_usage,
     get_fleet_stats,
 )
+from caddy import _build_tls_config, _sync_caddy_config
+from docker_utils import _effective_status
+from isolation import _apply_network_isolation, _build_iptables_image, _remove_network_isolation
+from templates import _resolve_template, generate_config, list_templates, write_bot_files
+from utils import deep_merge, ensure_meta, read_meta, sanitize_name, write_meta
 
 
 # ===========================================================================
@@ -1322,8 +1322,9 @@ class TestAuthAPI:
     @pytest.fixture(autouse=True)
     def setup(self, auth_env, monkeypatch):
         """Set up test client and seed admin user."""
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
         _bootstrap_admin()
         self.client = TestClient(app)
@@ -1331,8 +1332,9 @@ class TestAuthAPI:
 
     def _login_client(self, username="admin", password="admin-pass"):
         """Login and return a fresh client with the session cookie set."""
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         c = TestClient(app)
         r = c.post("/api/auth/login", json={"username": username, "password": password})
         assert r.status_code == 200
@@ -1523,15 +1525,17 @@ class TestGrantBotToUser:
 class TestRBACEndpoints:
     @pytest.fixture(autouse=True)
     def setup(self, auth_env, monkeypatch):
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
         _bootstrap_admin()
         self.client = TestClient(app)
 
     def _login_client(self, username="admin", password="admin-pass"):
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         c = TestClient(app)
         r = c.post("/api/auth/login", json={"username": username, "password": password})
         token = r.cookies.get("cfm_session")
@@ -1599,8 +1603,9 @@ class TestRBACEndpoints:
 
     def test_login_rate_limiting_endpoint(self):
         """Test that 5+ rapid failed logins return 429."""
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         c = TestClient(app)
         for _ in range(5):
             c.post("/api/auth/login", json={"username": "nobody", "password": "wrong"})
@@ -1621,9 +1626,10 @@ class TestWebSocketTerminal:
 
     @pytest.fixture(autouse=True)
     def setup(self, auth_env, monkeypatch):
-        import app as _app
         import docker as _docker
         from fastapi.testclient import TestClient
+
+        import app as _app
 
         self.docker = _docker
         self.mock_client = MagicMock()
@@ -2370,8 +2376,9 @@ class TestSyncCaddyConfig:
 class TestHealthEndpoint:
     @pytest.fixture(autouse=True)
     def setup(self, auth_env, monkeypatch):
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
         _bootstrap_admin()
         self.client = TestClient(app)
@@ -2389,8 +2396,9 @@ class TestHealthEndpoint:
 class TestSessionCookieSecureFlag:
     @pytest.fixture(autouse=True)
     def setup(self, auth_env, monkeypatch):
-        from app import app
         from fastapi.testclient import TestClient
+
+        from app import app
         monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
         _bootstrap_admin()
         self.client = TestClient(app)
@@ -2442,9 +2450,10 @@ class TestBotLifecycleAPI:
 
     @pytest.fixture(autouse=True)
     def setup(self, bot_env, auth_env, monkeypatch):
-        import app as _app
         import docker as _docker
         from fastapi.testclient import TestClient
+
+        import app as _app
         monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client = MagicMock()
         monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)
@@ -2545,9 +2554,10 @@ class TestFilesystemReadAPI:
 
     @pytest.fixture(autouse=True)
     def setup(self, bot_env, auth_env, monkeypatch):
-        import app as _app
         import docker as _docker
         from fastapi.testclient import TestClient
+
+        import app as _app
         monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client = MagicMock()
         monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)
@@ -2645,9 +2655,10 @@ class TestCRUDEndpointsAPI:
 
     @pytest.fixture(autouse=True)
     def setup(self, bot_env, auth_env, monkeypatch):
-        import app as _app
         import docker as _docker
         from fastapi.testclient import TestClient
+
+        import app as _app
         monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client = MagicMock()
         monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)
@@ -2797,8 +2808,9 @@ class TestFunctionalEndpointsAPI:
 
     @pytest.fixture(autouse=True)
     def setup(self, bot_env, auth_env, monkeypatch):
-        import app as _app
         from fastapi.testclient import TestClient
+
+        import app as _app
         monkeypatch.setattr(config, "AUTH_DISABLED", True)
         self.mock_client = MagicMock()
         monkeypatch.setattr("docker_utils._get_client", lambda: self.mock_client)

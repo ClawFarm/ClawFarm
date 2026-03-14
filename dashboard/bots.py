@@ -6,9 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+import docker
+
 import caddy
 import config
-import docker
 import docker_utils
 from isolation import _apply_network_isolation, _remove_network_isolation
 from templates import _resolve_template, generate_config, write_bot_files

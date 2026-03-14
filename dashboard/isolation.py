@@ -1,8 +1,9 @@
 import io
 import os
 
-import config
 import docker
+
+import config
 
 
 def _build_iptables_image(client) -> None:

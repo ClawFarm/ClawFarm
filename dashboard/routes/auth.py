@@ -1,5 +1,7 @@
 import os
 
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+
 import config
 from auth import (
     _DUMMY_HASH,
@@ -18,7 +20,6 @@ from auth import (
     _user_can_access_bot,
     _verify_password,
 )
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from models import ChangePasswordRequest, CreateUserRequest, LoginRequest, UpdateUserRequest
 
 router = APIRouter()

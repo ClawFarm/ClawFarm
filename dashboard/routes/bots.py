@@ -1,17 +1,17 @@
 import json
 import os
 
+import docker
+from fastapi import APIRouter, Depends, HTTPException
+
+import bots as bots_mod
 import caddy
 import config
-import docker
 import docker_utils
 from auth import _grant_bot_to_user, _require_bot_access, _require_session
 from backup import create_backup, list_backups, rollback_to_backup
-from fastapi import APIRouter, Depends, HTTPException
 from models import CreateBotRequest, DuplicateRequest, ForkRequest, RollbackRequest
 from utils import ensure_meta, read_meta
-
-import bots as bots_mod
 
 router = APIRouter()
 
