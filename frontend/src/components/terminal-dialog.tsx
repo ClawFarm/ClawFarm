@@ -23,7 +23,7 @@ function toBase64(str: string): string {
   );
 }
 
-export function TerminalDialog({ botName }: { botName: string }) {
+export function TerminalDialog({ botName, trigger }: { botName: string; trigger?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
   const termRef = useRef<HTMLDivElement>(null);
@@ -224,9 +224,11 @@ export function TerminalDialog({ botName }: { botName: string }) {
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
-        <Button size="sm" variant="secondary">
-          Terminal
-        </Button>
+        {trigger ?? (
+          <Button size="sm" variant="secondary">
+            Terminal
+          </Button>
+        )}
       </DialogTrigger>
       <DialogContent
         className="max-w-[calc(100vw-2rem)] w-full sm:max-w-5xl h-[85vh] flex flex-col p-0 gap-0 overflow-hidden"
