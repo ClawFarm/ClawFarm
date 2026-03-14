@@ -65,4 +65,7 @@ async def api_fleet_sparklines(session: dict = Depends(_require_session)):
 @router.get("/api/fleet/token-chart")
 async def api_fleet_token_chart(session: dict = Depends(_require_session)):
     """Hourly token usage by model for the fleet chart (7 days)."""
-    return get_fleet_token_chart()
+    allowed = None
+    if session["role"] != "admin" and "*" not in session.get("bots", []):
+        allowed = set(session.get("bots", []))
+    return get_fleet_token_chart(allowed_bots=allowed)

@@ -178,7 +178,9 @@ export function BotCard({ bot, sparkline, sparklineLoading, onAction }: BotCardP
                 <CloneDialog
                   sourceName={bot.name}
                   onClone={async (newName, trackFork) => {
-                    await action("clone", "Clone", () => api.cloneBot(bot.name, newName, trackFork));
+                    await api.cloneBot(bot.name, newName, trackFork);
+                    onAction();
+                    toast.success("Clone completed");
                   }}
                   trigger={
                     <DropdownMenuItem onSelect={(e) => e.preventDefault()}>

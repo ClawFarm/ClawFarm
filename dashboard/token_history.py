@@ -25,26 +25,6 @@ def _fleet_history_file() -> Path:
     return config.BOTS_DIR / ".fleet_token_history.jsonl"
 
 
-def _read_history(name: str) -> list[dict]:
-    """Read token history JSONL, skipping malformed lines."""
-    path = _snapshot_file(name)
-    if not path.exists():
-        return []
-    entries: list[dict] = []
-    try:
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    except OSError:
-        return []
-    return entries
-
-
 def _read_jsonl(path: Path) -> list[dict]:
     """Read a JSONL file, skipping malformed lines."""
     if not path.exists():
@@ -64,6 +44,11 @@ def _read_jsonl(path: Path) -> list[dict]:
     return entries
 
 
+def _read_history(name: str) -> list[dict]:
+    """Read per-bot token history JSONL."""
+    return _read_jsonl(_snapshot_file(name))
+
+
 def _write_jsonl(path: Path, entries: list[dict], max_entries: int) -> None:
     """Write entries as JSONL, keeping only the last max_entries."""
     trimmed = entries[-max_entries:]
@@ -79,7 +64,7 @@ def _write_history(name: str, entries: list[dict]) -> None:
 
 
 def _snapshot_one_bot(name: str) -> dict | None:
-    """Collect a single token usage snapshot for one bot. Returns the entry."""
+    """Collect a single token usage snapshot for one bot. Returns the entry with bot name."""
     usage = get_bot_token_usage(name)
     current_in = usage["input_tokens"]
     current_out = usage["output_tokens"]
@@ -106,6 +91,7 @@ def _snapshot_one_bot(name: str) -> dict | None:
         "cumulative": current_total,
         "cum_in": current_in,
         "cum_out": current_out,
+        "bot": name,
     }
 
     history.append(entry)
@@ -114,19 +100,29 @@ def _snapshot_one_bot(name: str) -> dict | None:
 
 
 def _update_fleet_history(bot_entries: list[dict | None]) -> None:
-    """Aggregate per-bot deltas into hourly fleet-level buckets by model."""
+    """Aggregate per-bot deltas into hourly fleet-level buckets.
+
+    Each hourly bucket stores per-bot contributions keyed by bot name,
+    enabling RBAC filtering at query time. Format:
+    {"ts": "...", "bots": {"bot-a": {"model": "m1", "total": 150}, ...}}
+    """
     now = datetime.now(timezone.utc)
     hour_key = now.strftime("%Y-%m-%dT%H:00:00Z")
 
-    # Sum deltas by model across all bots
-    model_totals: dict[str, int] = {}
+    # Collect per-bot contributions
+    bot_contributions: dict[str, dict] = {}
     for entry in bot_entries:
         if not entry or entry.get("total", 0) == 0:
             continue
+        bot_name = entry.get("bot", "unknown")
         model = entry.get("model") or "unknown"
-        model_totals[model] = model_totals.get(model, 0) + entry["total"]
+        total = entry["total"]
+        if bot_name in bot_contributions:
+            bot_contributions[bot_name]["total"] += total
+        else:
+            bot_contributions[bot_name] = {"model": model, "total": total}
 
-    if not model_totals:
+    if not bot_contributions:
         return
 
     path = _fleet_history_file()
@@ -134,12 +130,15 @@ def _update_fleet_history(bot_entries: list[dict | None]) -> None:
 
     # Update existing hour bucket or create new one
     if fleet_history and fleet_history[-1].get("ts") == hour_key:
-        existing = fleet_history[-1].get("models", {})
-        for model, total in model_totals.items():
-            existing[model] = existing.get(model, 0) + total
-        fleet_history[-1]["models"] = existing
+        existing_bots = fleet_history[-1].get("bots", {})
+        for bot_name, contrib in bot_contributions.items():
+            if bot_name in existing_bots:
+                existing_bots[bot_name]["total"] += contrib["total"]
+            else:
+                existing_bots[bot_name] = contrib
+        fleet_history[-1]["bots"] = existing_bots
     else:
-        fleet_history.append({"ts": hour_key, "models": model_totals})
+        fleet_history.append({"ts": hour_key, "bots": bot_contributions})
 
     _write_jsonl(path, fleet_history, _FLEET_MAX_ENTRIES)
 
@@ -191,9 +190,26 @@ def get_sparkline_data(name: str) -> list[dict]:
     return [{"ts": e["ts"], "total": e.get("total", 0)} for e in _read_history(name)]
 
 
-def get_fleet_token_chart() -> list[dict]:
+def get_fleet_token_chart(allowed_bots: set[str] | None = None) -> list[dict]:
     """Return fleet-level hourly token usage by model for chart rendering.
+
+    Args:
+        allowed_bots: If set, only include contributions from these bots.
+                      None means include all (admin).
 
     Returns: [{ts, models: {model_name: token_count}}, ...]
     """
-    return _read_jsonl(_fleet_history_file())
+    raw = _read_jsonl(_fleet_history_file())
+    result = []
+    for entry in raw:
+        bots = entry.get("bots", {})
+        # Aggregate per-bot data into per-model totals, respecting RBAC filter
+        models: dict[str, int] = {}
+        for bot_name, contrib in bots.items():
+            if allowed_bots is not None and bot_name not in allowed_bots:
+                continue
+            model = contrib.get("model", "unknown")
+            models[model] = models.get(model, 0) + contrib.get("total", 0)
+        if models:
+            result.append({"ts": entry["ts"], "models": models})
+    return result

@@ -125,7 +125,9 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
               <CloneDialog
                 sourceName={detail.name}
                 onClone={async (newName, trackFork) => {
-                  await action("Clone", () => api.cloneBot(detail!.name, newName, trackFork));
+                  await api.cloneBot(detail!.name, newName, trackFork);
+                  mutate();
+                  toast.success("Clone completed");
                 }}
               />
             </div>

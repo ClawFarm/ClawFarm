@@ -206,39 +206,59 @@ class TestGetSparklineData:
 class TestFleetHistory:
     def test_update_creates_hourly_bucket(self, bot_env):
         entries = [
-            {"ts": "2026-03-14T10:00:00Z", "in": 100, "out": 50, "total": 150, "model": "model-a"},
-            {"ts": "2026-03-14T10:00:00Z", "in": 200, "out": 80, "total": 280, "model": "model-b"},
+            {"ts": "t1", "in": 100, "out": 50, "total": 150, "model": "model-a", "bot": "bot-a"},
+            {"ts": "t1", "in": 200, "out": 80, "total": 280, "model": "model-b", "bot": "bot-b"},
         ]
         _update_fleet_history(entries)
         result = _read_jsonl(_fleet_history_file())
         assert len(result) == 1
-        assert result[0]["models"]["model-a"] == 150
-        assert result[0]["models"]["model-b"] == 280
+        assert result[0]["bots"]["bot-a"]["total"] == 150
+        assert result[0]["bots"]["bot-b"]["total"] == 280
+        # Verify get_fleet_token_chart aggregates into models
+        chart = get_fleet_token_chart()
+        assert chart[0]["models"]["model-a"] == 150
+        assert chart[0]["models"]["model-b"] == 280
 
     def test_accumulates_within_same_hour(self, bot_env):
-        entries1 = [{"ts": "t1", "in": 50, "out": 10, "total": 60, "model": "m1"}]
+        entries1 = [{"ts": "t1", "in": 50, "out": 10, "total": 60, "model": "m1", "bot": "b1"}]
         _update_fleet_history(entries1)
-        entries2 = [{"ts": "t2", "in": 30, "out": 20, "total": 50, "model": "m1"}]
+        entries2 = [{"ts": "t2", "in": 30, "out": 20, "total": 50, "model": "m1", "bot": "b1"}]
         _update_fleet_history(entries2)
         result = _read_jsonl(_fleet_history_file())
-        # Both should be in the same hourly bucket
         assert len(result) == 1
-        assert result[0]["models"]["m1"] == 110
+        assert result[0]["bots"]["b1"]["total"] == 110
 
     def test_skips_zero_delta_entries(self, bot_env):
         entries = [
-            {"ts": "t1", "in": 0, "out": 0, "total": 0, "model": "m1"},
+            {"ts": "t1", "in": 0, "out": 0, "total": 0, "model": "m1", "bot": "b1"},
         ]
         _update_fleet_history(entries)
         result = _read_jsonl(_fleet_history_file())
         assert len(result) == 0
 
     def test_skips_none_entries(self, bot_env):
-        entries = [None, {"ts": "t1", "in": 10, "out": 5, "total": 15, "model": "m1"}, None]
+        entries = [None, {"ts": "t1", "in": 10, "out": 5, "total": 15, "model": "m1", "bot": "b1"}, None]
         _update_fleet_history(entries)
         result = _read_jsonl(_fleet_history_file())
         assert len(result) == 1
-        assert result[0]["models"]["m1"] == 15
+        assert result[0]["bots"]["b1"]["total"] == 15
+
+    def test_rbac_filters_by_allowed_bots(self, bot_env):
+        """Non-admin users should only see data from their allowed bots."""
+        entries = [
+            {"ts": "t1", "in": 100, "out": 50, "total": 150, "model": "m1", "bot": "bot-mine"},
+            {"ts": "t1", "in": 200, "out": 80, "total": 280, "model": "m1", "bot": "bot-theirs"},
+        ]
+        _update_fleet_history(entries)
+        # Admin sees all
+        all_data = get_fleet_token_chart(allowed_bots=None)
+        assert all_data[0]["models"]["m1"] == 430
+        # Limited user sees only their bot
+        filtered = get_fleet_token_chart(allowed_bots={"bot-mine"})
+        assert filtered[0]["models"]["m1"] == 150
+        # User with no matching bots sees nothing
+        empty = get_fleet_token_chart(allowed_bots={"bot-other"})
+        assert empty == []
 
     def test_collect_updates_fleet_history(self, bot_env):
         bots_dir = bot_env["bots_dir"]
