@@ -120,7 +120,7 @@ def _sync_caddy_config() -> None:
         def _forward_auth_handler(extra_headers=None, redirect_on_fail=False):
             """Build a Caddy forward_auth (reverse_proxy) handler.
 
-            Uses copy_response_headers (Caddy's native forward_auth mechanism)
+            Uses copy_response (Caddy's native forward_auth mechanism)
             so that the auth subrequest doesn't consume the original connection.
             This is critical for WebSocket upgrade requests.
             """

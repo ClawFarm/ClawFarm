@@ -37,13 +37,18 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
     client = docker_utils._get_client()
     container_name = f"openclaw-bot-{sname}"
     try:
+        import docker
         container = client.containers.get(container_name)
         if container.status != "running":
             await websocket.send_json({"type": "error", "message": "Container is not running"})
             await websocket.close()
             return
-    except Exception:
+    except docker.errors.NotFound:
         await websocket.send_json({"type": "error", "message": "Container not found"})
+        await websocket.close()
+        return
+    except Exception:
+        await websocket.send_json({"type": "error", "message": "Docker error"})
         await websocket.close()
         return
 
@@ -60,7 +65,7 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
     raw_sock = sock._sock
     raw_sock.settimeout(2.0)  # Prevent blocking forever when WS disconnects
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     closed = asyncio.Event()
 
     async def _read_from_container():
