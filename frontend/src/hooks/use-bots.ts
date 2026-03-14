@@ -7,3 +7,10 @@ export function useBots() {
   });
   return { bots: data ?? [], error, isLoading, mutate };
 }
+
+export function useFleetSparklines() {
+  const { data, isLoading } = useSWR("fleet-sparklines", () => api.getFleetSparklines(), {
+    refreshInterval: 60000,
+  });
+  return { sparklines: data ?? {}, isLoading };
+}

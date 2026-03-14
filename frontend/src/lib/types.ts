@@ -114,3 +114,13 @@ export interface User {
   role: string;
   bots: string[];
 }
+
+export interface SparklinePoint {
+  ts: string;
+  total: number;
+}
+
+export interface FleetTokenChartPoint {
+  ts: string;
+  models: Record<string, number>;
+}
