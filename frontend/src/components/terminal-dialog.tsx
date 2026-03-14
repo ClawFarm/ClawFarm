@@ -17,6 +17,12 @@ import "@xterm/xterm/css/xterm.css";
 
 type Status = "idle" | "connecting" | "connected" | "disconnected" | "error";
 
+function toBase64(str: string): string {
+  return btoa(
+    Array.from(new TextEncoder().encode(str), (b) => String.fromCharCode(b)).join("")
+  );
+}
+
 export function TerminalDialog({ botName }: { botName: string }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
@@ -24,10 +30,19 @@ export function TerminalDialog({ botName }: { botName: string }) {
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   const connect = useCallback(() => {
     const container = termRef.current;
     if (!container) return;
+
+    // Tear down previous connection (e.g. on reconnect)
+    cleanupRef.current?.();
+    cleanupRef.current = null;
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
 
     // Create terminal if not already created
     if (!terminalRef.current) {
@@ -124,14 +139,14 @@ export function TerminalDialog({ botName }: { botName: string }) {
     // Terminal input → WebSocket
     const dataDisposable = term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "data", data: btoa(data) }));
+        ws.send(JSON.stringify({ type: "data", data: toBase64(data) }));
       }
     });
 
     // Binary input (for special keys)
     const binaryDisposable = term.onBinary((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "data", data: btoa(data) }));
+        ws.send(JSON.stringify({ type: "data", data: toBase64(data) }));
       }
     });
 
@@ -142,8 +157,8 @@ export function TerminalDialog({ botName }: { botName: string }) {
       }
     });
 
-    // Return cleanup
-    return () => {
+    // Store cleanup so reconnect can tear down properly
+    cleanupRef.current = () => {
       dataDisposable.dispose();
       binaryDisposable.dispose();
       resizeDisposable.dispose();
@@ -161,11 +176,10 @@ export function TerminalDialog({ botName }: { botName: string }) {
   // Connect when dialog opens, disconnect when it closes
   useEffect(() => {
     if (!open) {
-      // Cleanup WebSocket on close
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      // Tear down listeners + WebSocket
+      cleanupRef.current?.();
+      cleanupRef.current = null;
+      wsRef.current = null;
       // Dispose terminal on close
       if (terminalRef.current) {
         terminalRef.current.dispose();
@@ -249,6 +263,7 @@ export function TerminalDialog({ botName }: { botName: string }) {
               variant="ghost"
               className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground"
               onClick={() => handleOpenChange(false)}
+              aria-label="Close terminal"
             >
               &times;
             </Button>

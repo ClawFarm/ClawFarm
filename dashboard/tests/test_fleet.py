@@ -1742,6 +1742,18 @@ class TestWebSocketTerminal:
         call_args = self.mock_client.containers.get.call_args[0][0]
         assert call_args == "openclaw-bot-my-bot-name"
 
+    def test_invalid_name_closes_4400(self):
+        """Names that sanitize to empty (e.g. '!!!') close with 4400."""
+        from starlette.websockets import WebSocketDisconnect
+        token = self._login()
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with self.client.websocket_connect(
+                "/api/bots/!!!/terminal",
+                cookies={"cfm_session": token},
+            ):
+                pass  # pragma: no cover
+        assert exc_info.value.code == 4400
+
 
 # ===========================================================================
 # Bot name collision guard

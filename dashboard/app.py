@@ -2602,7 +2602,11 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
         if not session:
             await websocket.close(code=4401, reason="Not authenticated")
             return
-    sname = sanitize_name(name)
+    try:
+        sname = sanitize_name(name)
+    except ValueError as e:
+        await websocket.close(code=4400, reason=str(e))
+        return
     if not _user_can_access_bot(session, sname):
         await websocket.close(code=4403, reason="Access denied")
         return
@@ -2631,7 +2635,10 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
         user="node", workdir="/home/node",
     )["Id"]
     sock = api_client.exec_start(exec_id, tty=True, socket=True, demux=False)
-    # sock._sock is the raw socket for bidirectional I/O
+    # docker-py returns a SocketIO wrapper; ._sock is the underlying socket.
+    # This is the standard pattern — no public API exists for bidirectional exec I/O.
+    raw_sock = sock._sock
+    raw_sock.settimeout(2.0)  # Prevent blocking forever when WS disconnects
 
     loop = asyncio.get_event_loop()
     closed = asyncio.Event()
@@ -2640,7 +2647,10 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
         """Read PTY output and forward to WebSocket as base64."""
         try:
             while not closed.is_set():
-                data = await loop.run_in_executor(None, lambda: sock._sock.recv(4096))
+                try:
+                    data = await loop.run_in_executor(None, lambda: raw_sock.recv(4096))
+                except OSError:
+                    break  # Socket timeout or closed
                 if not data:
                     break
                 await websocket.send_json({
@@ -2651,6 +2661,11 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
             pass
         finally:
             closed.set()
+            # Unblock _read_from_websocket by closing the WS
+            try:
+                await websocket.close()
+            except Exception:
+                pass
 
     async def _read_from_websocket():
         """Read WebSocket messages and forward to PTY / handle resize."""
@@ -2659,7 +2674,7 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
                 msg = await websocket.receive_json()
                 if msg.get("type") == "data":
                     raw = base64.b64decode(msg["data"])
-                    await loop.run_in_executor(None, lambda r=raw: sock._sock.sendall(r))
+                    await loop.run_in_executor(None, lambda r=raw: raw_sock.sendall(r))
                 elif msg.get("type") == "resize":
                     cols = msg.get("cols", 80)
                     rows = msg.get("rows", 24)
@@ -2673,6 +2688,11 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
             pass
         finally:
             closed.set()
+            # Unblock _read_from_container by closing the socket
+            try:
+                raw_sock.shutdown(2)
+            except Exception:
+                pass
 
     try:
         await asyncio.gather(_read_from_container(), _read_from_websocket())
