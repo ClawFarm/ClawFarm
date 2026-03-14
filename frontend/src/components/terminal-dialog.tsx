@@ -79,13 +79,10 @@ export function TerminalDialog({ botName }: { botName: string }) {
 
     const term = terminalRef.current;
 
-    // Build WebSocket URL — in dev mode, Next.js rewrites don't proxy WS,
-    // so connect directly to the backend. In production (Caddy), same origin works.
+    // WebSocket URL — always use same origin. Caddy routes /api/* to dashboard.
+    // Next.js rewrites don't proxy WebSocket upgrades, so this must go through Caddy.
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const devBackend = process.env.NEXT_PUBLIC_API_WS_URL;
-    const wsUrl = devBackend
-      ? `${devBackend}/api/bots/${encodeURIComponent(botName)}/terminal`
-      : `${proto}//${window.location.host}/api/bots/${encodeURIComponent(botName)}/terminal`;
+    const wsUrl = `${proto}//${window.location.host}/api/bots/${encodeURIComponent(botName)}/terminal`;
 
     setStatus("connecting");
     term.writeln("\x1b[90mConnecting...\x1b[0m");
