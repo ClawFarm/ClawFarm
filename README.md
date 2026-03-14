@@ -210,7 +210,7 @@ cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 cd frontend && npm install && npm run dev
 
 # Tests
-cd dashboard && python -m pytest tests/test_fleet.py -v
+cd dashboard && uv run pytest tests/ -v
 ```
 
 ## Documentation

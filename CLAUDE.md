@@ -7,10 +7,22 @@ Docker-based fleet manager for OpenClaw bots. Single-page dashboard to create, d
 ```
 botfarm/
 ├── dashboard/              # FastAPI backend (Python 3.12)
-│   ├── app.py              # All backend logic: bot lifecycle, backup, metrics, API routes
+│   ├── app.py              # FastAPI entrypoint + lifespan
+│   ├── config.py           # Constants and env vars
+│   ├── auth.py             # Sessions, RBAC, rate limiting, user CRUD
+│   ├── bots.py             # Bot lifecycle, operations, metrics
+│   ├── backup.py           # Backup, rollback, retention
+│   ├── caddy.py            # Caddy config sync, TLS, network helpers
+│   ├── docker_utils.py     # Docker client, host path conversion
+│   ├── isolation.py        # iptables network isolation
+│   ├── templates.py        # Template resolution and listing
+│   ├── utils.py            # sanitize_name, deep_merge, metadata I/O
+│   ├── models.py           # Pydantic request models
+│   ├── scheduler.py        # Background housekeeping + backup threads
+│   ├── routes/             # API route handlers (auth, bots, fleet, terminal)
 │   ├── entrypoint.sh       # Docker entrypoint: auto-detects Docker socket GID
 │   ├── Dockerfile
-│   └── tests/test_fleet.py # ~100 unit + integration tests (pytest)
+│   └── tests/              # ~234 unit + integration tests (pytest)
 ├── frontend/               # Next.js 16 dashboard UI (React 19, Tailwind 4, shadcn/ui)
 │   ├── src/app/            # Pages: / (dashboard), /bots/[name] (detail)
 │   ├── src/components/     # UI components (bot-card, bot-actions, logs-dialog, etc.)
@@ -267,7 +279,12 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 
 | File | Purpose |
 |------|---------|
-| `dashboard/app.py` | **All backend logic** — bot CRUD, backup, rollback, metrics, auth, Docker orchestration, API routes |
+| `dashboard/app.py` | FastAPI entrypoint — lifespan, CORS, router inclusion |
+| `dashboard/bots.py` | Bot lifecycle, operations, metrics, fleet stats |
+| `dashboard/auth.py` | Sessions, RBAC, rate limiting, user CRUD |
+| `dashboard/caddy.py` | Caddy config sync, TLS, network helpers |
+| `dashboard/config.py` | All constants and env vars |
+| `dashboard/routes/` | API route handlers (auth, bots, fleet, terminal) |
 | `frontend/src/lib/api.ts` | Frontend API client — all backend calls |
 | `frontend/src/lib/types.ts` | TypeScript interfaces (Bot, BotDetail, BotStats, Backup, User, etc.) |
 | `frontend/src/app/page.tsx` | Dashboard home page |
@@ -321,11 +338,11 @@ Browser → Caddy (forward_auth subrequest) → FastAPI /api/auth/verify
 ## Common Tasks
 
 ### Adding a new API endpoint
-1. Add the function in `dashboard/app.py` (pure logic section)
-2. Add the FastAPI route in the routes section at the bottom
+1. Add the business logic function in the appropriate module (`dashboard/bots.py`, `dashboard/backup.py`, etc.)
+2. Add the FastAPI route in the matching `dashboard/routes/` file
 3. Add the client method in `frontend/src/lib/api.ts`
 4. Add TypeScript types if needed in `frontend/src/lib/types.ts`
-5. Add tests in `dashboard/tests/test_fleet.py`
+5. Add tests in the matching `dashboard/tests/test_<module>.py` file
 
 ### Adding a new UI component
 Frontend uses shadcn/ui components in `frontend/src/components/ui/`. Custom components go in `frontend/src/components/`. Data fetching uses SWR hooks in `frontend/src/hooks/`.

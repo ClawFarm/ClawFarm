@@ -29,9 +29,8 @@ docker compose -f docker-compose.dev.yml logs dashboard | head -20
 
 ```bash
 # Backend
-python -m venv .venv && source .venv/bin/activate
-uv pip install -e ".[dev]"   # or: pip install -e ".[dev]"
-cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
+uv sync --dev
+cd dashboard && uv run uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 
 # Frontend (separate terminal)
 cd frontend && npm install && npm run dev
@@ -76,7 +75,7 @@ All checks run in CI on every PR.
 ## PR Guidelines
 
 - Keep PRs focused — one feature or fix per PR.
-- Add tests for new backend functionality in `dashboard/tests/test_fleet.py`.
+- Add tests in the matching `dashboard/tests/test_<module>.py` file.
 - Update `CLAUDE.md` if you change project structure or architecture.
 
 ## Reporting Issues

@@ -9,5 +9,5 @@
 ## Checklist
 
 - [ ] `ruff check dashboard/` passes
-- [ ] Backend tests pass (`cd dashboard && python -m pytest tests/test_fleet.py -v`)
+- [ ] Backend tests pass (`cd dashboard && uv run pytest tests/ -v`)
 - [ ] Frontend builds (`cd frontend && npm run lint && npm run build`)
