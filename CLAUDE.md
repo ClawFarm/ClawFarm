@@ -46,16 +46,17 @@ botfarm/
 # 1. Environment
 cp .env.example .env   # Edit with your LLM endpoint details
 
-# 2. Backend
-python -m venv .venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
-cd dashboard && uvicorn app:app --host 0.0.0.0 --port 8080 --reload
+# 2. Backend (uses uv for dependency management)
+uv sync --dev          # Creates .venv and installs all deps from uv.lock
+cd dashboard && uv run uvicorn app:app --host 0.0.0.0 --port 8080 --reload
 
 # 3. Frontend (separate terminal)
 cd frontend && npm install && npm run dev
 
 # 4. Open http://localhost:3000
 ```
+
+**Important:** Always use `uv sync --dev` for dependency management — never `pip install` directly. The project uses `uv.lock` for reproducible builds.
 
 ## Docker Compose Deployment
 
@@ -80,8 +81,8 @@ UI screenshots go in the `screenshots/` directory (gitignored). Use this for doc
 ## Running Tests
 
 ```bash
-source .venv/bin/activate
-cd dashboard && python -m pytest tests/test_fleet.py -v
+uv sync --dev   # if not already done
+cd dashboard && uv run pytest tests/ -v
 ```
 
 All tests are filesystem-based with monkeypatched paths — no Docker needed.
