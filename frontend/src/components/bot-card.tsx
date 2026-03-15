@@ -107,7 +107,7 @@ export function BotCard({ bot, sparkline, sparklineLoading, onAction }: BotCardP
 
           {/* Primary actions */}
           <div className="flex gap-1.5">
-            {bot.status === "running" ? (
+            {isRunning ? (
               <a
                 href={botUiUrl(bot, config?.portal_url)}
                 target="_blank"

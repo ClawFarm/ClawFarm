@@ -44,7 +44,7 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
     );
   }
 
-  if (!detail) {
+  if (!detail || detail.status === "not_found") {
     return (
       <div className="min-h-screen">
         <Header />
@@ -83,7 +83,7 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
 
             {/* Primary actions */}
             <div className="flex flex-wrap gap-1.5">
-              {detail.status === "running" ? (
+              {isRunning ? (
                 <a
                   href={botUiUrl(detail, config?.portal_url, detail.gateway_token)}
                   target="_blank"
