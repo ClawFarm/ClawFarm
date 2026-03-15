@@ -17,8 +17,7 @@ BASE_URL="${BASE_URL:-http://localhost:3000}"
 # ---------------------------------------------------------------------------
 if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
   echo "Installing screenshot tool dependencies..."
-  (cd "$SCRIPT_DIR" && npm install --silent)
-  npx playwright install chromium
+  (cd "$SCRIPT_DIR" && npm install --silent && npx playwright install chromium)
 fi
 
 if [ ! -d "$FRONTEND_DIR/node_modules" ]; then

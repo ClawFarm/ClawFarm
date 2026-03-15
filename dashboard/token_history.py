@@ -75,7 +75,7 @@ def _snapshot_one_bot(name: str) -> dict | None:
     prev_cumulative_out = 0
     if history:
         last = history[-1]
-        prev_cumulative_in = last.get("cum_in", last.get("cumulative", 0))
+        prev_cumulative_in = last.get("cum_in", 0)
         prev_cumulative_out = last.get("cum_out", 0)
 
     delta_in = max(0, current_in - prev_cumulative_in)
@@ -119,6 +119,7 @@ def _update_fleet_history(bot_entries: list[dict | None]) -> None:
         total = entry["total"]
         if bot_name in bot_contributions:
             bot_contributions[bot_name]["total"] += total
+            bot_contributions[bot_name]["model"] = model
         else:
             bot_contributions[bot_name] = {"model": model, "total": total}
 
@@ -134,6 +135,7 @@ def _update_fleet_history(bot_entries: list[dict | None]) -> None:
         for bot_name, contrib in bot_contributions.items():
             if bot_name in existing_bots:
                 existing_bots[bot_name]["total"] += contrib["total"]
+                existing_bots[bot_name]["model"] = contrib["model"]
             else:
                 existing_bots[bot_name] = contrib
         fleet_history[-1]["bots"] = existing_bots
