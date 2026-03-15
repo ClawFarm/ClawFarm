@@ -63,7 +63,16 @@ done
 (cd "$SCRIPT_DIR" && npx tsx capture.ts)
 
 # ---------------------------------------------------------------------------
-# 4. Cleanup (handled by trap)
+# 4. Sync to website if it exists
+# ---------------------------------------------------------------------------
+WEBSITE_DIR="$PROJECT_ROOT/../clawfarm.dev/public/screenshots"
+if [ -d "$WEBSITE_DIR" ]; then
+  cp "$PROJECT_ROOT/assets/screenshots/"*.png "$WEBSITE_DIR/"
+  echo "Synced to clawfarm.dev/public/screenshots/"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Cleanup (handled by trap)
 # ---------------------------------------------------------------------------
 echo ""
 echo "Screenshots saved to assets/screenshots/"
