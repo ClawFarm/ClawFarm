@@ -1,31 +1,48 @@
-# Manual QA Audit Plan — ClawFarm
+# QA Test Plan — ClawFarm
+
+Comprehensive user-simulation test plan for validating ClawFarm before releases.
+Designed to be executed by an AI agent using Playwright (via MCP) against a running
+Docker Compose deployment. Covers all user roles, every UI interaction, RBAC
+enforcement, and edge cases.
+
+## Prerequisites
+
+- Full stack running via `docker compose -f docker-compose.dev.yml up -d`
+- Playwright MCP server available
+- Three test users configured:
+  - **Admin user** — role=admin, bots=["*"]
+  - **Limited user** — role=user, bots=[subset of bot names]
+  - **Empty user** — role=user, bots=[]
+- At least 4 bots existing (2+ running, 2+ exited)
 
 ## Environment
 
-- **URL:** https://claws.gitter.ai
-- **Admin:** storm (role=admin, bots=["*"])
-- **Limited user:** david (role=user, bots=[baby-steps, flynn-fletcher, lawrence-fletcher, open-claw-helper, ai-intelligence-brief])
-- **Empty user:** drew (role=user, bots=[])
-- **Bots:** bens-bot (running), ai-intelligence-brief (running), market-analyst (running), open-claw-helper (exited), lawrence-fletcher (exited), support-agent (exited), content-writer (exited)
+- **URL:** `https://localhost:8443` (default, or `CADDY_PORT` if changed)
+- Credentials should be read from `.env` (`ADMIN_USER` / `ADMIN_PASSWORD`)
+- Limited and empty user passwords can be reset via the admin API before testing
 
-## Phase 1: Admin Full Walkthrough (storm)
+---
+
+## Phase 1: Admin Full Walkthrough
 
 ### 1.1 Login
+- [ ] Login with wrong password → error "Invalid username or password", stays on login page
 - [ ] Login with correct credentials → redirects to dashboard
-- [ ] Verify header shows: username "storm", role "admin", "Users" link, running count
+- [ ] Verify header shows: username, "admin" role badge, "Users" link, active bot count
 
 ### 1.2 Dashboard Overview
 - [ ] Fleet stats row shows correct counts (total bots, running, tokens)
-- [ ] Fleet token chart renders with bars (not empty state)
+- [ ] Fleet token chart renders with bars (not the empty "data collection begins" state)
 - [ ] Chart tooltip appears on hover with model breakdown
-- [ ] Bot cards render in grid (7 bots)
-- [ ] Running bots show green dot + "running" badge + Open UI / Terminal / Logs buttons
-- [ ] Exited bots show red dot + "exited" badge + Start / Logs buttons
+- [ ] Bot cards render in grid
+- [ ] Running bots show green dot + "running" badge + Open UI / Terminal / Logs buttons enabled
+- [ ] Unhealthy bots show red dot + "unhealthy" badge + Open UI / Terminal enabled (they're still running)
+- [ ] Exited bots show red dot + "exited" badge + Open UI and Terminal disabled, Logs enabled
 - [ ] Each card shows sparkline + token count
-- [ ] Card dropdown menu works (⋯ button)
+- [ ] Card dropdown menu works (⋯ button) with Start/Stop/Restart/Clone/Delete options
 
-### 1.3 Bot Detail — Running Bot (bens-bot)
-- [ ] Click bot name → navigates to /bots/bens-bot
+### 1.3 Bot Detail — Running Bot
+- [ ] Click bot name → navigates to /bots/{name}
 - [ ] Status badge shows "running"
 - [ ] Overview section: path, container name, created date, storage
 - [ ] Token stats: total, input, output, model
@@ -36,13 +53,13 @@
 - [ ] Action buttons: Stop, Restart, Logs, Terminal, Clone, Open UI, Delete
 - [ ] Back arrow → returns to dashboard
 
-### 1.4 Bot Detail — Exited Bot (support-agent)
-- [ ] Navigate to /bots/support-agent
+### 1.4 Bot Detail — Exited Bot
+- [ ] Navigate to detail page of an exited bot
 - [ ] Status shows "exited"
 - [ ] Start button visible (not Stop/Restart)
 - [ ] Open UI button disabled
 - [ ] Terminal button disabled
-- [ ] Metrics show zeros or "N/A" state
+- [ ] Metrics show "No metrics available" or zeros
 - [ ] Back arrow works
 
 ### 1.5 Bot Actions — Start/Stop/Restart
@@ -54,7 +71,7 @@
 ### 1.6 Open UI
 - [ ] On running bot, click "Open UI" → opens /claw/{name}/ in new tab
 - [ ] Control UI loads (may take a moment)
-- [ ] Verify X-Forwarded-User header is passed (check auth works in OpenClaw)
+- [ ] Verify X-Forwarded-User header is passed (auth works in OpenClaw)
 
 ### 1.7 Terminal
 - [ ] On running bot, click Terminal → dialog opens
@@ -116,10 +133,8 @@
 
 ### 1.14 User Management (Admin)
 - [ ] Click "Users" in header → /users page
-- [ ] All 3 users listed (storm, david, drew)
-- [ ] storm shows "(you)" label, no Delete button
-- [ ] david shows "user" role, bot access list
-- [ ] drew shows "user" role, "none" access
+- [ ] All users listed with roles and bot access
+- [ ] Current user shows "(you)" label, no Delete button
 
 ### 1.15 Add User
 - [ ] Fill in username, password, role=user
@@ -149,26 +164,28 @@
 - [ ] Click Sign Out → redirects to login
 - [ ] Accessing dashboard → redirects to login (session cleared)
 
-## Phase 2: Limited User (david)
+---
+
+## Phase 2: Limited User
 
 ### 2.1 Login & Dashboard
-- [ ] Login as david → dashboard shows
-- [ ] Only sees bots in access list (baby-steps, flynn-fletcher, lawrence-fletcher, open-claw-helper, ai-intelligence-brief)
-- [ ] Does NOT see bots outside list (bens-bot, support-agent, market-analyst, content-writer)
+- [ ] Login as limited user → dashboard shows
+- [ ] Only sees bots in their access list
+- [ ] Does NOT see bots outside their list
 - [ ] Fleet stats reflect only accessible bots
-- [ ] Header shows "david", "user" role, "Account" link (not "Users")
+- [ ] Header shows username, "user" role, "Account" link (not "Users")
 
 ### 2.2 Bot Actions as Limited User
 - [ ] Can view detail of allowed bot
 - [ ] Can start/stop/restart allowed bot
 - [ ] Can view logs of allowed bot
 - [ ] Can create backup of allowed bot
-- [ ] Can clone allowed bot → new bot auto-granted to david
+- [ ] Can clone allowed bot → new bot auto-granted to this user
 
 ### 2.3 RBAC Enforcement
-- [ ] Navigate directly to /bots/bens-bot → should show error or restricted view
-- [ ] API call to /api/bots/bens-bot/detail → 403
-- [ ] API call to /api/bots/bens-bot/stop → 403
+- [ ] Navigate directly to /bots/{restricted-bot} → should show error or restricted view
+- [ ] API call to /api/bots/{restricted-bot}/detail → 403
+- [ ] API call to /api/bots/{restricted-bot}/stop → 403
 
 ### 2.4 User Management as Non-Admin
 - [ ] Click "Account" → sees only Change Password card
@@ -178,21 +195,25 @@
 
 ### 2.5 Create Bot as Limited User
 - [ ] Create a new bot → bot created successfully
-- [ ] New bot auto-added to david's bot access list
-- [ ] david can see and manage the new bot
+- [ ] New bot auto-added to this user's bot access list
+- [ ] User can now see and manage the new bot
 
-## Phase 3: Empty User (drew)
+---
+
+## Phase 3: Empty User
 
 ### 3.1 Login & Empty Dashboard
-- [ ] Login as drew → dashboard shows
-- [ ] Zero bots visible (drew has empty bots list)
+- [ ] Login as empty user → dashboard shows
+- [ ] Zero bots visible
 - [ ] Empty state message: "No agents yet..."
 - [ ] Fleet stats show zeros
 
 ### 3.2 Create Bot
 - [ ] Create a new bot → should succeed
-- [ ] Bot auto-granted to drew
-- [ ] Drew can now see and manage it
+- [ ] Bot auto-granted to this user
+- [ ] User can now see and manage it
+
+---
 
 ## Phase 4: Edge Cases & Error Handling
 
@@ -217,6 +238,8 @@
 ### 4.5 Bot That's Not Found
 - [ ] Navigate to /bots/nonexistent-bot → "Bot not found" message + back link
 
+---
+
 ## Phase 5: Cross-Feature Integration
 
 ### 5.1 Full Lifecycle
@@ -231,10 +254,12 @@
 - [ ] Clone bot → verify workspace (SOUL.md, MEMORY.md) copied
 - [ ] Clone does NOT copy sessions (fresh conversation)
 
+---
+
 ## Execution Notes
 
-- Use Playwright browser for all testing
-- Take screenshots at key checkpoints
+- Use Playwright browser (MCP) for all testing
+- Take screenshots at key checkpoints for visual regression
 - Log any bugs found with exact reproduction steps
-- Test on the live deployment at claws.gitter.ai
-- Clean up test bots after each phase
+- Clean up test bots created during testing after each phase
+- If a test user doesn't exist, create one via the admin API before starting that phase
