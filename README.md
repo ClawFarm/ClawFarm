@@ -19,9 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshot-dashboard.png" width="800" alt="ClawFarm dashboard showing a fleet of running AI agents">
-  <br>
-  <img src="assets/screenshot-create-agent.png" width="800" alt="Creating a new agent with template selection and personality configuration">
+  <img src="assets/screenshots/dashboard-desktop.png" width="800" alt="ClawFarm dashboard showing a fleet of running AI agents with token usage chart">
 </p>
 
 OpenClaw is a powerful autonomous AI agent, but it's designed as a **single-operator personal assistant** — one gateway process, one admin, CLI-driven setup. Running multiple agents means manually provisioning each instance, managing separate configs, ports, and TLS certs, with no isolation between them.
@@ -38,6 +36,33 @@ ClawFarm wraps OpenClaw in operational infrastructure:
 - **Templates** — define reusable agent configurations with `{{ENV_VAR}}` substitution. Create new agents in seconds.
 
 Think of it as **Portainer for OpenClaw** — the AI capabilities are 100% OpenClaw, ClawFarm just makes running a fleet of them manageable.
+
+<details>
+<summary><strong>More screenshots</strong></summary>
+
+**Create a new agent** — pick a template, name it, customize the personality:
+
+<img src="assets/screenshots/create-agent-desktop.png" width="800" alt="Creating a new agent with template selection">
+
+**Agent detail page** — token usage, live metrics, cron jobs, backups:
+
+<img src="assets/screenshots/detail-desktop.png" width="800" alt="Agent detail page with metrics and config">
+
+**Web terminal** — interactive shell into any running agent:
+
+<img src="assets/screenshots/terminal-desktop.png" width="800" alt="Web terminal showing OpenClaw status">
+
+**Mobile responsive** — full functionality on any device:
+
+<p>
+  <img src="assets/screenshots/dashboard-mobile.png" width="280" alt="Dashboard on mobile">
+  &nbsp;
+  <img src="assets/screenshots/detail-mobile.png" width="280" alt="Agent detail on mobile">
+  &nbsp;
+  <img src="assets/screenshots/terminal-mobile.png" width="280" alt="Terminal on mobile">
+</p>
+
+</details>
 
 ## Quick Start
 

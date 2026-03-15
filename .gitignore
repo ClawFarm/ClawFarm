@@ -37,8 +37,8 @@ htmlcov/
 # Internal notes
 feedback.md
 
-# Screenshots
-screenshots/
+# Ad-hoc screenshots (not the tooling or assets)
+/screenshots/
 e2e-dashboard.png
 
 # TLS certs
@@ -48,3 +48,6 @@ certs/
 frontend/node_modules/
 frontend/.next/
 frontend/.env.local
+
+# Script dependencies
+scripts/screenshots/node_modules/
