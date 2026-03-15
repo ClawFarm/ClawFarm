@@ -10,7 +10,7 @@ import { useAuth } from "@/hooks/use-auth";
 export function Header() {
   const { bots } = useBots();
   const { user, logout } = useAuth();
-  const running = bots.filter((b) => b.status === "running").length;
+  const running = bots.filter((b) => b.status === "running" || b.status === "starting" || b.status === "unhealthy").length;
 
   return (
     <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">

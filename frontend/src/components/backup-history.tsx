@@ -19,11 +19,17 @@ interface Props {
   botName: string;
   backups: Backup[];
   onAction: () => void;
+  initialLimit?: number;
 }
 
-export function BackupHistory({ botName, backups, onAction }: Props) {
+export function BackupHistory({ botName, backups, onAction, initialLimit }: Props) {
   const [loading, setLoading] = useState("");
   const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  const reversed = [...backups].reverse();
+  const limited = initialLimit && !expanded && reversed.length > initialLimit;
+  const visible = limited ? reversed.slice(0, initialLimit) : reversed;
 
   async function handleBackup() {
     setLoading("backup");
@@ -67,7 +73,7 @@ export function BackupHistory({ botName, backups, onAction }: Props) {
           <p className="text-sm text-muted-foreground">No backups yet.</p>
         ) : (
           <div className="space-y-1">
-            {[...backups].reverse().map((b) => (
+            {visible.map((b) => (
               <div
                 key={b.timestamp}
                 className="flex items-center justify-between rounded-sm bg-secondary px-3 py-1.5 text-xs border border-border"
@@ -89,6 +95,16 @@ export function BackupHistory({ botName, backups, onAction }: Props) {
                 </Button>
               </div>
             ))}
+            {limited && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="w-full text-xs text-muted-foreground"
+                onClick={() => setExpanded(true)}
+              >
+                Show all {reversed.length} backups
+              </Button>
+            )}
           </div>
         )}
       </div>

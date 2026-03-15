@@ -3,6 +3,7 @@
 import { use, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import useSWR from "swr";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,14 +11,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Header } from "@/components/header";
 import { MetricsDisplay } from "@/components/metrics-display";
 import { BackupHistory } from "@/components/backup-history";
-import { ConfigViewer } from "@/components/config-viewer";
-import { SoulViewer } from "@/components/soul-viewer";
 import { LogsDialog } from "@/components/logs-dialog";
 import { TerminalDialog } from "@/components/terminal-dialog";
-import { NamePromptDialog } from "@/components/name-prompt-dialog";
+import { CloneDialog } from "@/components/clone-dialog";
+import { Sparkline } from "@/components/sparkline";
 import { useBotDetail } from "@/hooks/use-bot-detail";
 import { useConfig } from "@/hooks/use-config";
-import { statusColor, formatBytes, formatTokens, botUiUrl } from "@/lib/format";
+import { statusColor, formatTokens, botUiUrl } from "@/lib/format";
 import { api } from "@/lib/api";
 
 export default function BotDetailPage({ params }: { params: Promise<{ name: string }> }) {
@@ -29,6 +29,12 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  const { data: sparklineData } = useSWR(
+    detail ? `sparkline-${detail.name}` : null,
+    () => api.getBotSparkline(decodedName),
+    { refreshInterval: 60000 },
+  );
+
   if (isLoading) {
     return (
       <div className="min-h-screen">
@@ -38,7 +44,7 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
     );
   }
 
-  if (!detail) {
+  if (!detail || detail.status === "not_found") {
     return (
       <div className="min-h-screen">
         <Header />
@@ -49,6 +55,8 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
       </div>
     );
   }
+
+  const isRunning = detail.status === "running" || detail.status === "starting" || detail.status === "unhealthy";
 
   async function action(label: string, fn: () => Promise<unknown>) {
     try {
@@ -64,140 +72,114 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
     <div className="min-h-screen">
       <Header />
       <div className="px-4 sm:px-6 py-4">
-        <div className="flex items-center gap-3 mb-4">
-          <Link href="/" className="text-muted-foreground hover:text-foreground transition-colors text-sm">&larr;</Link>
-          <h1 className="text-lg font-bold">{detail.name}</h1>
-          <Badge className={statusColor(detail.status)}>{detail.status}</Badge>
-        </div>
-
         <div className="space-y-4 max-w-5xl">
-          {/* Overview */}
+          {/* Hero */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <Link href="/" className="text-muted-foreground hover:text-foreground transition-colors text-sm">&larr;</Link>
+              <h1 className="text-lg font-bold">{detail.name}</h1>
+              <Badge className={statusColor(detail.status)}>{detail.status}</Badge>
+            </div>
+
+            {/* Primary actions */}
+            <div className="flex flex-wrap gap-1.5">
+              {isRunning ? (
+                <a
+                  href={botUiUrl(detail, config?.portal_url, detail.gateway_token)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => { api.approveDevices(detail!.name).catch(() => {}); }}
+                >
+                  <Button size="sm">Open UI</Button>
+                </a>
+              ) : (
+                <Button size="sm" disabled>Open UI</Button>
+              )}
+              <TerminalDialog
+                botName={detail.name}
+                trigger={
+                  <Button size="sm" variant="secondary" disabled={!isRunning}>
+                    Terminal
+                  </Button>
+                }
+              />
+              <LogsDialog botName={detail.name} />
+            </div>
+
+            {/* Lifecycle actions */}
+            <div className="flex flex-wrap gap-1.5">
+              {!isRunning ? (
+                <Button size="sm" variant="secondary" onClick={() => action("Start", () => api.startBot(detail!.name))}>
+                  Start
+                </Button>
+              ) : (
+                <>
+                  <Button size="sm" variant="secondary" onClick={() => action("Stop", () => api.stopBot(detail!.name))}>
+                    Stop
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => action("Restart", () => api.restartBot(detail!.name))}>
+                    Restart
+                  </Button>
+                </>
+              )}
+              <CloneDialog
+                sourceName={detail.name}
+                onClone={async (newName, trackFork) => {
+                  await api.cloneBot(detail!.name, newName, trackFork);
+                  mutate();
+                  toast.success("Clone completed");
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Token sparkline + stats */}
           <Card className="bg-card border-border">
-            <CardHeader>
-              <CardTitle className="text-sm">Overview</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
-                <div>
-                  <span className="text-muted-foreground">{detail.ui_path ? "Path" : "Port"}</span>
-                  <div className="font-medium">{detail.ui_path || detail.port}</div>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Container</span>
-                  <div className="font-medium truncate">{detail.container_name || "—"}</div>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Created</span>
-                  <div className="font-medium">
-                    {detail.meta?.created_at ? new Date(detail.meta.created_at).toLocaleString() : "—"}
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-6">
+                <Sparkline data={sparklineData ?? []} width={200} height={48} className="shrink-0 opacity-80" />
+                {detail.token_usage && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs flex-1">
+                    <div>
+                      <span className="text-muted-foreground">Total Tokens</span>
+                      <div className="font-medium">{formatTokens(detail.token_usage.total_tokens)}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Input</span>
+                      <div className="font-medium">{formatTokens(detail.token_usage.input_tokens)}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Output</span>
+                      <div className="font-medium">{formatTokens(detail.token_usage.output_tokens)}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Model</span>
+                      <div className="font-medium truncate">{detail.token_usage.model || "\u2014"}</div>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Storage</span>
-                  <div className="font-medium">{formatBytes(detail.storage_bytes)}</div>
-                </div>
-              </div>
-              {detail.token_usage && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
-                  <div>
-                    <span className="text-muted-foreground">Total Tokens</span>
-                    <div className="font-medium">{formatTokens(detail.token_usage.total_tokens)}</div>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Input</span>
-                    <div className="font-medium">{formatTokens(detail.token_usage.input_tokens)}</div>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Output</span>
-                    <div className="font-medium">{formatTokens(detail.token_usage.output_tokens)}</div>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Model</span>
-                    <div className="font-medium truncate">{detail.token_usage.model || "—"}</div>
-                  </div>
-                </div>
-              )}
-              {!detail.ui_path && detail.gateway_token && (
-                <div className="text-xs">
-                  <span className="text-muted-foreground">Gateway Token</span>
-                  <div className="font-mono bg-secondary px-2 py-1 rounded mt-0.5 flex items-center gap-2">
-                    <span className="truncate">{detail.gateway_token}</span>
-                    <button
-                      className="text-foreground hover:opacity-70 transition-opacity shrink-0"
-                      onClick={() => {
-                        navigator.clipboard.writeText(detail.gateway_token);
-                        toast.success("Token copied to clipboard");
-                      }}
-                    >
-                      Copy
-                    </button>
-                  </div>
-                </div>
-              )}
-              <div className="flex flex-wrap gap-1.5">
-                {detail.status !== "running" && detail.status !== "starting" && detail.status !== "unhealthy" ? (
-                  <Button size="sm" variant="secondary" onClick={() => action("Start", () => api.startBot(detail!.name))}>Start</Button>
-                ) : (
-                  <>
-                    <Button size="sm" variant="secondary" onClick={() => action("Stop", () => api.stopBot(detail!.name))}>Stop</Button>
-                    <Button size="sm" variant="secondary" onClick={() => action("Restart", () => api.restartBot(detail!.name))}>Restart</Button>
-                  </>
-                )}
-                <LogsDialog botName={detail.name} />
-                {(detail.status === "running" || detail.status === "unhealthy") && (
-                  <TerminalDialog botName={detail.name} />
-                )}
-                <NamePromptDialog
-                  label="Duplicate"
-                  title={`Duplicate "${detail.name}"`}
-                  description="Enter a name for the duplicate bot."
-                  onSubmit={(n) => action("Duplicate", () => api.duplicateBot(detail!.name, n))}
-                />
-                <NamePromptDialog
-                  label="Fork"
-                  title={`Fork "${detail.name}"`}
-                  description="Enter a name for the forked bot."
-                  onSubmit={(n) => action("Fork", () => api.forkBot(detail!.name, n))}
-                />
-                {(detail.ui_path || detail.port > 0) && (
-                  <a
-                    href={botUiUrl(detail, config?.portal_url, detail.gateway_token)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => { api.approveDevices(detail!.name).catch(() => {}); }}
-                  >
-                    <Button size="sm" variant="secondary">Open UI</Button>
-                  </a>
-                )}
-                {!confirmDelete ? (
-                  <Button size="sm" variant="destructive" onClick={() => setConfirmDelete(true)}>Delete</Button>
-                ) : (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      disabled={deleting}
-                      onClick={async () => {
-                        setDeleting(true);
-                        try {
-                          await api.deleteBot(detail!.name);
-                          toast.success(`Deleted "${detail!.name}"`);
-                          router.push("/");
-                        } catch (err) {
-                          toast.error(err instanceof Error ? err.message : "Delete failed");
-                          setDeleting(false);
-                          setConfirmDelete(false);
-                        }
-                      }}
-                    >
-                      {deleting ? "Deleting..." : "Confirm delete"}
-                    </Button>
-                    <Button size="sm" variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button>
-                  </>
                 )}
               </div>
             </CardContent>
           </Card>
+
+          {/* Gateway token (dev mode only) */}
+          {!detail.ui_path && detail.gateway_token && (
+            <div className="text-xs px-1">
+              <span className="text-muted-foreground">Gateway Token</span>
+              <div className="font-mono bg-secondary px-2 py-1 rounded mt-0.5 flex items-center gap-2">
+                <span className="truncate">{detail.gateway_token}</span>
+                <button
+                  className="text-foreground hover:opacity-70 transition-opacity shrink-0"
+                  onClick={() => {
+                    navigator.clipboard.writeText(detail.gateway_token);
+                    toast.success("Token copied to clipboard");
+                  }}
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Metrics */}
           <Card className="bg-card border-border">
@@ -239,30 +221,81 @@ export default function BotDetailPage({ params }: { params: Promise<{ name: stri
             </Card>
           )}
 
-          {/* Config & Soul */}
+          {/* Config & Soul — collapsible */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card className="bg-card border-border">
               <CardContent className="pt-6">
-                <ConfigViewer config={detail.config} />
+                <details>
+                  <summary className="text-sm font-medium cursor-pointer select-none hover:text-muted-foreground transition-colors">
+                    OpenClaw Config
+                  </summary>
+                  <div className="mt-3 rounded-sm bg-secondary border border-border p-3 overflow-auto max-h-64">
+                    <pre className="text-xs whitespace-pre-wrap text-muted-foreground font-mono">
+                      {JSON.stringify(detail.config, null, 2)}
+                    </pre>
+                  </div>
+                </details>
               </CardContent>
             </Card>
             <Card className="bg-card border-border">
               <CardContent className="pt-6">
-                <SoulViewer soul={detail.soul} />
+                <details>
+                  <summary className="text-sm font-medium cursor-pointer select-none hover:text-muted-foreground transition-colors">
+                    SOUL.md
+                  </summary>
+                  <div className="mt-3 rounded-sm bg-secondary border border-border p-3 overflow-auto max-h-48">
+                    <pre className="text-xs whitespace-pre-wrap text-muted-foreground font-mono">
+                      {detail.soul || "(empty)"}
+                    </pre>
+                  </div>
+                </details>
               </CardContent>
             </Card>
           </div>
 
-          {/* Backups */}
+          {/* Backups — limited to 3 */}
           <Card className="bg-card border-border">
             <CardContent className="pt-6">
               <BackupHistory
                 botName={detail.name}
                 backups={detail.meta?.backups || []}
                 onAction={mutate}
+                initialLimit={3}
               />
             </CardContent>
           </Card>
+
+          {/* Delete — bottom of page */}
+          <div className="border-t border-border pt-4">
+            {!confirmDelete ? (
+              <Button size="sm" variant="destructive" onClick={() => setConfirmDelete(true)}>
+                Delete this agent
+              </Button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={deleting}
+                  onClick={async () => {
+                    setDeleting(true);
+                    try {
+                      await api.deleteBot(detail!.name);
+                      toast.success(`Deleted "${detail!.name}"`);
+                      router.push("/");
+                    } catch (err) {
+                      toast.error(err instanceof Error ? err.message : "Delete failed");
+                      setDeleting(false);
+                      setConfirmDelete(false);
+                    }
+                  }}
+                >
+                  {deleting ? "Deleting..." : "Confirm delete"}
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

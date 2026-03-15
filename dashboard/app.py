@@ -13,6 +13,7 @@ from caddy import _connect_caddy_to_network, _sync_caddy_config
 from isolation import _apply_network_isolation, _build_iptables_image
 from routes import all_routers
 from scheduler import _backup_scheduler, _backup_stop_event, _housekeeping_scheduler, _housekeeping_stop_event
+from token_history import _token_history_scheduler, _token_history_stop_event
 from utils import read_meta
 
 
@@ -92,9 +93,14 @@ async def _lifespan(app: FastAPI):
         _backup_stop_event.clear()
         t = threading.Thread(target=_backup_scheduler, daemon=True, name="backup-scheduler")
         t.start()
+    # Start token history scheduler (sparkline data every 15 min)
+    if config.TOKEN_HISTORY_INTERVAL > 0:
+        _token_history_stop_event.clear()
+        threading.Thread(target=_token_history_scheduler, daemon=True, name="token-history").start()
     yield
     _housekeeping_stop_event.set()
     _backup_stop_event.set()
+    _token_history_stop_event.set()
 
 
 _in_compose = bool(os.environ.get("HOST_BOTS_DIR"))

@@ -69,6 +69,11 @@ if not PORTAL_URL and TLS_MODE in ("off", "acme"):
 _IPTABLES_IMAGE = "clawfarm-iptables:local"
 
 # ---------------------------------------------------------------------------
+# Token history (sparkline data)
+# ---------------------------------------------------------------------------
+TOKEN_HISTORY_INTERVAL = int(os.environ.get("TOKEN_HISTORY_INTERVAL", "900"))  # 15 min default
+
+# ---------------------------------------------------------------------------
 # Housekeeping
 # ---------------------------------------------------------------------------
 _HOUSEKEEPING_INTERVAL = 1800  # 30 minutes

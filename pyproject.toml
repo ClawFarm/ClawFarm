@@ -40,7 +40,7 @@ select = ["E", "W", "F", "I"]
 [tool.ruff.lint.isort]
 known-first-party = [
     "app", "config", "utils", "docker_utils", "models", "templates",
-    "auth", "backup", "isolation", "caddy", "bots", "scheduler", "routes",
+    "auth", "backup", "isolation", "caddy", "bots", "scheduler", "routes", "token_history",
 ]
 
 [tool.pytest.ini_options]

@@ -10,7 +10,8 @@ import config
 import docker_utils
 from auth import _grant_bot_to_user, _require_bot_access, _require_session
 from backup import create_backup, list_backups, rollback_to_backup
-from models import CreateBotRequest, DuplicateRequest, ForkRequest, RollbackRequest
+from models import CloneRequest, CreateBotRequest, DuplicateRequest, ForkRequest, RollbackRequest
+from token_history import get_sparkline_data
 from utils import ensure_meta, read_meta
 
 router = APIRouter()
@@ -149,6 +150,37 @@ async def api_fork_bot(name: str, req: ForkRequest,
     except Exception as e:
         config.log.warning("fork_bot failed: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- Clone (unified duplicate/fork) ---
+
+@router.post("/api/bots/{name}/clone")
+async def api_clone_bot(name: str, req: CloneRequest, ctx: dict = Depends(_require_bot_access)):
+    try:
+        if req.track_fork:
+            result = bots_mod.fork_bot(ctx["_bot_name"], req.new_name, created_by=ctx["username"])
+        else:
+            result = bots_mod.duplicate_bot(ctx["_bot_name"], req.new_name, created_by=ctx["username"])
+        _grant_bot_to_user(ctx["username"], result["name"])
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except (RuntimeError, PermissionError) as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        config.log.warning("clone_bot failed: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- Sparkline ---
+
+@router.get("/api/bots/{name}/sparkline")
+async def api_bot_sparkline(name: str, ctx: dict = Depends(_require_bot_access)):
+    return get_sparkline_data(ctx["_bot_name"])
 
 
 # --- Backup & Rollback ---

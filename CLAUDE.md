@@ -46,8 +46,16 @@ botfarm/
 ├── .github/workflows/      # CI (lint + test + build) and release (Docker publish)
 ├── CONTRIBUTING.md         # Contributor guidelines
 ├── RELEASING.md            # Release process docs
+├── scripts/                # Automation scripts
+│   └── screenshots/        # Playwright screenshot capture tool
+│       ├── capture.ts      # Main capture script
+│       ├── mock-data.ts    # Mock API responses (6 bots, sparklines, fleet chart)
+│       ├── run.sh          # One-command: starts frontend, captures, stops
+│       └── package.json    # playwright + tsx deps
+├── assets/                 # Tracked assets for README/website
+│   └── screenshots/        # Generated screenshots (desktop + mobile)
 ├── certs/                  # Self-signed TLS cert (gitignored)
-├── screenshots/            # UI screenshots (gitignored)
+├── screenshots/            # Ad-hoc UI screenshots (gitignored)
 ├── .env                    # Local config (gitignored)
 └── .env.example            # Template for .env
 ```
@@ -98,6 +106,31 @@ cd dashboard && uv run pytest tests/ -v
 ```
 
 All tests are filesystem-based with monkeypatched paths — no Docker needed.
+
+## Generating Screenshots
+
+Polished screenshots for the README and website are generated automatically using Playwright with mocked API data — no running backend or real bots needed.
+
+```bash
+# One command — starts frontend, captures all screens, stops frontend:
+./scripts/screenshots/run.sh
+
+# Or manually (if frontend is already running on :3000):
+cd scripts/screenshots && npm install && npx playwright install chromium
+npx tsx capture.ts
+```
+
+**Output:** `assets/screenshots/` — 10 PNGs (5 screens x 2 viewports)
+
+| Screen | Desktop (1920x1080) | Mobile (393x852) |
+|--------|-------|--------|
+| Login | `login-desktop.png` | `login-mobile.png` |
+| Dashboard | `dashboard-desktop.png` | `dashboard-mobile.png` |
+| Create Agent | `create-agent-desktop.png` | `create-agent-mobile.png` |
+| Bot Detail | `detail-desktop.png` | `detail-mobile.png` |
+| Terminal | `terminal-desktop.png` | `terminal-mobile.png` |
+
+Mock data includes 6 diverse bots (Anthropic, OpenAI, MiniMax, Researcher), sparklines with business-hours patterns, a 7-day fleet token chart, and a fake terminal TUI. All data is seeded for deterministic output. Edit `scripts/screenshots/mock-data.ts` to change bot personas or add screens.
 
 ## CI & Linting
 

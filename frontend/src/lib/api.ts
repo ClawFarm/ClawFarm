@@ -1,4 +1,4 @@
-import type { Bot, BotDetail, BotStats, Backup, CreateBotRequest, FleetStats, Template, User } from "./types";
+import type { Bot, BotDetail, BotStats, Backup, CreateBotRequest, FleetStats, FleetTokenChartPoint, SparklinePoint, Template, User } from "./types";
 
 const API_BASE = "/api";
 
@@ -53,6 +53,15 @@ export const api = {
   getConfig: () => request<PortalConfig>("/config"),
   listTemplates: () => request<Template[]>("/templates"),
   getFleetStats: () => request<FleetStats>("/fleet/stats"),
+  getFleetTokenChart: () => request<FleetTokenChartPoint[]>("/fleet/token-chart"),
+  getFleetSparklines: () => request<Record<string, SparklinePoint[]>>("/fleet/sparklines"),
+  getBotSparkline: (name: string) =>
+    request<SparklinePoint[]>(`/bots/${encodeURIComponent(name)}/sparkline`),
+  cloneBot: (name: string, newName: string, trackFork: boolean = false) =>
+    request<Bot>(`/bots/${encodeURIComponent(name)}/clone`, {
+      method: "POST",
+      body: JSON.stringify({ new_name: newName, track_fork: trackFork }),
+    }),
   listBots: () => request<Bot[]>("/bots"),
   createBot: (data: CreateBotRequest) =>
     request<Bot>("/bots", { method: "POST", body: JSON.stringify(data) }),
