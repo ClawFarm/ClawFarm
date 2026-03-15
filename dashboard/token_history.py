@@ -202,14 +202,18 @@ def get_fleet_token_chart(allowed_bots: set[str] | None = None) -> list[dict]:
     raw = _read_jsonl(_fleet_history_file())
     result = []
     for entry in raw:
-        bots = entry.get("bots", {})
-        # Aggregate per-bot data into per-model totals, respecting RBAC filter
-        models: dict[str, int] = {}
-        for bot_name, contrib in bots.items():
-            if allowed_bots is not None and bot_name not in allowed_bots:
-                continue
-            model = contrib.get("model", "unknown")
-            models[model] = models.get(model, 0) + contrib.get("total", 0)
+        bots = entry.get("bots")
+        if bots:
+            # New format: per-bot contributions with RBAC support
+            models: dict[str, int] = {}
+            for bot_name, contrib in bots.items():
+                if allowed_bots is not None and bot_name not in allowed_bots:
+                    continue
+                model = contrib.get("model", "unknown")
+                models[model] = models.get(model, 0) + contrib.get("total", 0)
+        else:
+            # Old format: direct {models: {model_name: count}} (no RBAC)
+            models = entry.get("models", {})
         if models:
             result.append({"ts": entry["ts"], "models": models})
     return result
