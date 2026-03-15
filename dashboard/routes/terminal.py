@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import socket as _socket
 
 from fastapi import APIRouter, Cookie, WebSocket, WebSocketDisconnect
 
@@ -74,8 +75,10 @@ async def ws_terminal(name: str, websocket: WebSocket, cfm_session: str | None =
             while not closed.is_set():
                 try:
                     data = await loop.run_in_executor(None, lambda: raw_sock.recv(4096))
+                except _socket.timeout:
+                    continue  # Idle timeout — keep waiting for output
                 except OSError:
-                    break  # Socket timeout or closed
+                    break  # Socket actually closed
                 if not data:
                     break
                 await websocket.send_json({
